@@ -5,12 +5,23 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::config;
+
 static LOG_FILE: OnceLock<Option<Mutex<File>>> = OnceLock::new();
 static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static VERBOSE: OnceLock<bool> = OnceLock::new();
 
 pub fn init() {
-    let _ = log_internal("INFO", "logger init");
+    let debug_enabled = verbose_enabled();
+    let path = log_path();
+    let _ = log_internal(
+        "INFO",
+        &format!(
+            "logger init path={} debug={}",
+            path.display(),
+            debug_enabled
+        ),
+    );
 }
 
 pub fn info(message: &str) {
@@ -32,6 +43,10 @@ pub fn debug(message: &str) {
     }
 }
 
+pub fn debug_enabled() -> bool {
+    verbose_enabled()
+}
+
 pub fn log_path() -> PathBuf {
     LOG_PATH
         .get_or_init(|| {
@@ -42,9 +57,20 @@ pub fn log_path() -> PathBuf {
 }
 
 fn verbose_enabled() -> bool {
-    *VERBOSE.get_or_init(|| match env::var("AUI_DEBUG") {
-        Ok(value) => matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"),
-        Err(_) => false,
+    *VERBOSE.get_or_init(|| {
+        if let Some(value) = env::var("AUI_DEBUG")
+            .ok()
+            .and_then(|value| parse_bool_value(&value))
+        {
+            return value;
+        }
+        if let Some(value) = env::var("AUI_LOG_LEVEL")
+            .ok()
+            .and_then(|value| parse_log_level(&value))
+        {
+            return value;
+        }
+        config::debug_enabled()
     })
 }
 
@@ -82,6 +108,22 @@ fn timestamp() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}.{:03}", now.as_secs(), now.subsec_millis())
+}
+
+fn parse_bool_value(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_log_level(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "debug" | "trace" => Some(true),
+        "info" | "warn" | "warning" | "error" => Some(false),
+        _ => None,
+    }
 }
 
 fn config_dir() -> Option<PathBuf> {

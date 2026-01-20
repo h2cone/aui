@@ -1,4 +1,5 @@
 mod manager;
 mod storage;
 
-pub use manager::{Session, SessionId, SessionManager, SessionRole, SessionStats};
+pub use manager::{Session, SessionId, SessionManager, SessionMessage, SessionRole, SessionStats};
+pub use storage::{SessionStorage, StoredSession};

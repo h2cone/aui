@@ -70,7 +70,7 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                                     div()
                                         .text_xs()
                                         .text_color(rgb(0x5b6777))
-                                        .child(session.agent.name),
+                                        .child(session.agent.name.clone()),
                                 ),
                         ),
                 )

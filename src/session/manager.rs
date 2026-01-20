@@ -30,6 +30,15 @@ impl SessionRole {
             SessionRole::Tool => "tool",
         }
     }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(SessionRole::User),
+            "assistant" => Some(SessionRole::Assistant),
+            "tool" => Some(SessionRole::Tool),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -117,6 +126,14 @@ impl SessionManager {
         self.sessions.iter_mut().find(|session| session.id == id)
     }
 
+    pub fn session(&self, id: SessionId) -> Option<&Session> {
+        self.sessions.iter().find(|session| session.id == id)
+    }
+
+    pub fn session_mut(&mut self, id: SessionId) -> Option<&mut Session> {
+        self.sessions.iter_mut().find(|session| session.id == id)
+    }
+
     pub fn set_active(&mut self, id: SessionId) {
         if self.sessions.iter().any(|session| session.id == id) {
             self.active_id = Some(id);
@@ -139,14 +156,23 @@ impl SessionManager {
         id
     }
 
+    pub fn push_message(
+        &mut self,
+        id: SessionId,
+        role: SessionRole,
+        content: String,
+    ) -> Option<usize> {
+        let session = self.sessions.iter_mut().find(|session| session.id == id)?;
+        session.messages.push(SessionMessage {
+            role,
+            content,
+            timestamp: SystemTime::now(),
+        });
+        Some(session.messages.len().saturating_sub(1))
+    }
+
     pub fn append_message(&mut self, id: SessionId, role: SessionRole, content: String) {
-        if let Some(session) = self.sessions.iter_mut().find(|session| session.id == id) {
-            session.messages.push(SessionMessage {
-                role,
-                content,
-                timestamp: SystemTime::now(),
-            });
-        }
+        let _ = self.push_message(id, role, content);
     }
 
     pub fn set_status(&mut self, id: SessionId, status: AgentStatus) {
@@ -161,5 +187,16 @@ impl SessionManager {
             session.stats.tokens_out = session.stats.tokens_out.saturating_add(output);
             session.stats.cost_usd += cost;
         }
+    }
+
+    pub fn restore_session(&mut self, session: Session) {
+        let id_value = session.id.value();
+        if self.active_id.is_none() {
+            self.active_id = Some(session.id);
+        }
+        if self.next_id <= id_value {
+            self.next_id = id_value.saturating_add(1);
+        }
+        self.sessions.push(session);
     }
 }

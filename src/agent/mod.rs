@@ -6,14 +6,18 @@ pub mod bridge;
 
 #[derive(Clone, Debug)]
 pub struct AgentInfo {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: String,
+    pub name: String,
     pub kind: AgentKind,
 }
 
 impl AgentInfo {
-    pub const fn new(id: &'static str, name: &'static str, kind: AgentKind) -> Self {
-        Self { id, name, kind }
+    pub fn new(id: impl Into<String>, name: impl Into<String>, kind: AgentKind) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            kind,
+        }
     }
 }
 
