@@ -1,11 +1,16 @@
 mod actions;
+#[allow(dead_code)]
 mod agent;
 mod app;
+#[allow(dead_code)]
 mod config;
+#[allow(dead_code)]
 mod logger;
+#[allow(dead_code)]
 mod session;
 mod text_element;
 mod text_input;
+#[allow(dead_code)]
 mod ui;
 
 use gpui::{
