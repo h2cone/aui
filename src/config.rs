@@ -95,3 +95,40 @@ fn parse_bool_value(value: &str) -> Option<bool> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_value_reads_key() {
+        let contents = r#"
+# comment
+default_agent_id = "codex-cli"
+debug = true
+"#;
+        assert_eq!(
+            parse_value(contents, "default_agent_id"),
+            Some("codex-cli".to_string())
+        );
+        assert_eq!(parse_value(contents, "missing"), None);
+    }
+
+    #[test]
+    fn parse_bool_accepts_values() {
+        let contents = r#"
+debug = true
+debug_mode = "no"
+"#;
+        assert_eq!(parse_bool(contents, "debug"), Some(true));
+        assert_eq!(parse_bool(contents, "debug_mode"), Some(false));
+        assert_eq!(parse_bool(contents, "missing"), None);
+    }
+
+    #[test]
+    fn parse_bool_value_cases() {
+        assert_eq!(parse_bool_value("YES"), Some(true));
+        assert_eq!(parse_bool_value("off"), Some(false));
+        assert_eq!(parse_bool_value("maybe"), None);
+    }
+}

@@ -97,6 +97,26 @@ impl AuiApp {
         cx.notify();
     }
 
+    pub fn delete_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        if !self.sessions.remove_session(id) {
+            return;
+        }
+        self.stream_targets.remove(&id);
+        if let Err(err) = self.storage.delete_session(id) {
+            logger::warn(&format!(
+                "session delete failed id={} error={}",
+                id.value(),
+                err
+            ));
+        }
+        if self.sessions.sessions().is_empty() {
+            self.status_note = "No sessions remaining".to_string();
+        } else {
+            self.status_note = "Session deleted".to_string();
+        }
+        cx.notify();
+    }
+
     fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<Self>) {
         let message = self.text_input.update(cx, |input, cx| {
             let message = input.take_submission();
@@ -408,6 +428,8 @@ impl Render for AuiApp {
                             .flex()
                             .flex_col()
                             .gap_3()
+                            .id("conversation-scroll")
+                            .overflow_y_scroll()
                             .child(conversation::render_conversation(active_session)),
                     )
                     .child(status_bar::render_status_bar(

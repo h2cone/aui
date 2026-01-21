@@ -199,4 +199,73 @@ impl SessionManager {
         }
         self.sessions.push(session);
     }
+
+    pub fn remove_session(&mut self, id: SessionId) -> bool {
+        let Some(index) = self.sessions.iter().position(|session| session.id == id) else {
+            return false;
+        };
+        self.sessions.remove(index);
+        if self.active_id == Some(id) {
+            if self.sessions.is_empty() {
+                self.active_id = None;
+            } else {
+                let next_index = index.min(self.sessions.len() - 1);
+                self.active_id = Some(self.sessions[next_index].id);
+            }
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{AgentInfo, AgentKind};
+
+    fn sample_agent() -> AgentInfo {
+        AgentInfo::new("test", "Test Agent", AgentKind::Claude)
+    }
+
+    #[test]
+    fn create_session_sets_active() {
+        let mut manager = SessionManager::new();
+        let id = manager.create_session("alpha", sample_agent());
+        assert_eq!(manager.active_id(), Some(id));
+        assert_eq!(manager.sessions().len(), 1);
+    }
+
+    #[test]
+    fn push_message_returns_index() {
+        let mut manager = SessionManager::new();
+        let id = manager.create_session("alpha", sample_agent());
+        let index = manager.push_message(id, SessionRole::User, "hello".to_string());
+        assert_eq!(index, Some(0));
+        let session = manager.session(id).expect("session missing");
+        assert_eq!(session.messages.len(), 1);
+        assert_eq!(session.messages[0].content, "hello");
+    }
+
+    #[test]
+    fn bump_usage_saturates_tokens() {
+        let mut manager = SessionManager::new();
+        let id = manager.create_session("alpha", sample_agent());
+        manager.bump_usage(id, u32::MAX - 1, u32::MAX - 2, 0.0);
+        manager.bump_usage(id, 10, 20, 1.5);
+        let session = manager.session(id).expect("session missing");
+        assert_eq!(session.stats.tokens_in, u32::MAX);
+        assert_eq!(session.stats.tokens_out, u32::MAX);
+        assert!((session.stats.cost_usd - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn remove_session_updates_active() {
+        let mut manager = SessionManager::new();
+        let first = manager.create_session("alpha", sample_agent());
+        let second = manager.create_session("beta", sample_agent());
+        assert_eq!(manager.active_id(), Some(second));
+        assert!(manager.remove_session(second));
+        assert_eq!(manager.active_id(), Some(first));
+        assert!(manager.remove_session(first));
+        assert_eq!(manager.active_id(), None);
+    }
 }

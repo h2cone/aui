@@ -28,6 +28,10 @@ impl SessionStorage {
         }
     }
 
+    pub fn with_root(root: PathBuf) -> Self {
+        Self { root }
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -71,6 +75,14 @@ impl SessionStorage {
 
         sessions.sort_by_key(|session| session.id.value());
         Ok(sessions)
+    }
+
+    pub fn delete_session(&self, id: SessionId) -> io::Result<()> {
+        let dir = self.session_dir(id);
+        if !dir.exists() {
+            return Ok(());
+        }
+        fs::remove_dir_all(dir)
     }
 
     fn session_dir(&self, id: SessionId) -> PathBuf {
@@ -151,4 +163,83 @@ fn read_messages(path: &Path) -> io::Result<Vec<SessionMessage>> {
         });
     }
     Ok(messages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use tempfile::tempdir;
+
+    use crate::agent::{AgentInfo, AgentKind, AgentStatus};
+    use crate::session::{Session, SessionMessage, SessionRole, SessionStats};
+
+    fn sample_session(id: u64) -> Session {
+        let timestamp = UNIX_EPOCH + Duration::from_secs(123);
+        Session {
+            id: SessionId::new(id),
+            title: "alpha".to_string(),
+            agent: AgentInfo::new("test", "Test Agent", AgentKind::Claude),
+            status: AgentStatus::Idle,
+            stats: SessionStats::new(),
+            messages: vec![
+                SessionMessage {
+                    role: SessionRole::User,
+                    content: "hello".to_string(),
+                    timestamp,
+                },
+                SessionMessage {
+                    role: SessionRole::Assistant,
+                    content: "world".to_string(),
+                    timestamp,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn load_sessions_empty_when_missing() {
+        let dir = tempdir().expect("tempdir");
+        let missing_root = dir.path().join("missing");
+        let storage = SessionStorage::with_root(missing_root);
+        let sessions = storage.load_sessions().expect("load");
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+        let session = sample_session(1);
+        storage.save_session(&session).expect("save");
+
+        let loaded = storage.load_sessions().expect("load");
+        assert_eq!(loaded.len(), 1);
+        let stored = &loaded[0];
+        assert_eq!(stored.id.value(), session.id.value());
+        assert_eq!(stored.title, session.title);
+        assert_eq!(stored.agent_id, session.agent.id);
+        assert_eq!(stored.agent_name, session.agent.name);
+        assert_eq!(stored.messages.len(), session.messages.len());
+        assert_eq!(stored.messages[0].content, "hello");
+        let ts = stored.messages[0]
+            .timestamp
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(ts, 123);
+    }
+
+    #[test]
+    fn delete_session_removes_dir() {
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+        let session = sample_session(7);
+        storage.save_session(&session).expect("save");
+        let session_dir = storage.root().join("session-7");
+        assert!(session_dir.exists());
+        storage.delete_session(session.id).expect("delete");
+        assert!(!session_dir.exists());
+    }
 }

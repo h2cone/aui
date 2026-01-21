@@ -76,9 +76,35 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                 )
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(rgb(0x475569))
-                        .child(session.status_label()),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(0x475569))
+                                .child(session.status_label()),
+                        )
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(hsla(0.0, 0.0, 0.0, 0.08))
+                                .bg(hsla(0.0, 0.0, 1.0, 0.0))
+                                .text_xs()
+                                .text_color(rgb(0x64748b))
+                                .cursor(CursorStyle::PointingHand)
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, _, cx| {
+                                        cx.stop_propagation();
+                                        view.delete_session(id, cx);
+                                    }),
+                                )
+                                .child("x"),
+                        ),
                 )
                 .into_any_element(),
         );

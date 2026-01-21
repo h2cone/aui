@@ -1,42 +1,29 @@
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::env;
+use std::io::{BufRead, BufReader, Read};
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::agent::{
-    Agent, AgentInfo, AgentStatus, AgentStream, Attachment, StreamEvent, UserMessage,
-    WorkingContext,
+    Agent, AgentInfo, AgentKind, AgentStatus, AgentStream, StreamEvent, UserMessage,
 };
 use crate::logger;
 
 pub struct BridgeClient {
     agents: Vec<AgentInfo>,
-    process: Option<Arc<BridgeProcess>>,
-    id_source: Arc<AtomicU64>,
 }
 
 impl BridgeClient {
     pub fn new() -> Self {
         let agents = crate::agent::adapters::available_agents();
-        logger::debug(&format!("bridge client init agents={}", agents.len()));
-        let process = match BridgeProcess::spawn() {
-            Ok(process) => Some(Arc::new(process)),
-            Err(err) => {
-                logger::warn(&format!("bridge spawn failed: {err}"));
-                None
-            }
-        };
-
-        Self {
-            agents,
-            process,
-            id_source: Arc::new(AtomicU64::new(1)),
-        }
+        logger::debug(&format!(
+            "bridge client init agents={} transport=rust",
+            agents.len()
+        ));
+        Self { agents }
     }
 
     pub fn agents(&self) -> &[AgentInfo] {
@@ -48,339 +35,7 @@ impl BridgeClient {
     }
 
     pub fn connect(&self, info: &AgentInfo) -> Box<dyn Agent> {
-        match &self.process {
-            Some(process) => Box::new(BridgeAgent::new(
-                info.clone(),
-                Arc::clone(process),
-                Arc::clone(&self.id_source),
-            )),
-            None => Box::new(NullAgent::new(info.clone())),
-        }
-    }
-}
-
-struct BridgeProcess {
-    stdin: Mutex<ChildStdin>,
-    pending: Arc<Mutex<HashMap<String, mpsc::Sender<BridgeResponse>>>>,
-    _child: Mutex<Child>,
-}
-
-impl BridgeProcess {
-    fn spawn() -> io::Result<Self> {
-        let entry = bridge_entry_path()?;
-        logger::debug(&format!("bridge entry path={}", entry.display()));
-        if !entry.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("bridge entry missing: {}", entry.display()),
-            ));
-        }
-
-        let mut child = Command::new("node")
-            .arg(entry)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "bridge stdin unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "bridge stdout unavailable"))?;
-
-        let process = Self {
-            stdin: Mutex::new(stdin),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            _child: Mutex::new(child),
-        };
-
-        logger::debug("bridge process spawned");
-        process.start_reader(stdout);
-        Ok(process)
-    }
-
-    fn start_reader(&self, stdout: impl io::Read + Send + 'static) {
-        let pending = Arc::clone(&self.pending);
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) => {
-                        if line.trim().is_empty() {
-                            continue;
-                        }
-                        match serde_json::from_str::<BridgeResponse>(&line) {
-                            Ok(response) => {
-                                let terminal = response.is_terminal();
-                                let id = response.id.clone();
-                                if let Ok(mut map) = pending.lock() {
-                                    if let Some(sender) = map.get(&id) {
-                                        if sender.send(response).is_err() {
-                                            map.remove(&id);
-                                            continue;
-                                        }
-                                    } else {
-                                        logger::debug(&format!(
-                                            "bridge response without pending id={}",
-                                            id
-                                        ));
-                                    }
-                                    if terminal {
-                                        map.remove(&id);
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                logger::warn(&format!("bridge parse error: {err}"));
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        logger::warn(&format!("bridge read error: {err}"));
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    fn request(&self, request: BridgeRequest) -> Result<mpsc::Receiver<BridgeResponse>, String> {
-        let (tx, rx) = mpsc::channel();
-        {
-            let mut pending = self
-                .pending
-                .lock()
-                .map_err(|_| "bridge pending lock failed".to_string())?;
-            pending.insert(request.id.clone(), tx);
-        }
-
-        let payload = serde_json::to_string(&request)
-            .map_err(|err| format!("bridge serialize failed: {err}"))?;
-        let mut stdin = self
-            .stdin
-            .lock()
-            .map_err(|_| "bridge stdin lock failed".to_string())?;
-        stdin
-            .write_all(payload.as_bytes())
-            .and_then(|_| stdin.write_all(b"\n"))
-            .and_then(|_| stdin.flush())
-            .map_err(|err| format!("bridge send failed: {err}"))?;
-
-        Ok(rx)
-    }
-}
-
-#[derive(Clone)]
-struct BridgeAgent {
-    info: AgentInfo,
-    process: Arc<BridgeProcess>,
-    id_source: Arc<AtomicU64>,
-}
-
-impl BridgeAgent {
-    fn new(info: AgentInfo, process: Arc<BridgeProcess>, id_source: Arc<AtomicU64>) -> Self {
-        Self {
-            info,
-            process,
-            id_source,
-        }
-    }
-}
-
-impl Agent for BridgeAgent {
-    fn send(&self, message: UserMessage) -> AgentStream {
-        let (events_tx, events_rx) = mpsc::channel();
-        let id = self.id_source.fetch_add(1, Ordering::Relaxed).to_string();
-        let text_len = message.text.len();
-        let attachments_len = message.attachments.len();
-        let cwd = message
-            .context
-            .as_ref()
-            .and_then(|context| context.cwd.as_ref())
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "none".to_string());
-        logger::debug(&format!(
-            "bridge send id={} agent={} text_len={} attachments={} cwd={}",
-            id.as_str(),
-            self.info.id.as_str(),
-            text_len,
-            attachments_len,
-            cwd
-        ));
-        let request = BridgeRequest {
-            id: id.clone(),
-            method: "send".to_string(),
-            params: BridgeParams::from_message(&self.info, message),
-        };
-
-        match self.process.request(request) {
-            Ok(rx) => {
-                thread::spawn(move || {
-                    loop {
-                        match rx.recv() {
-                            Ok(response) => {
-                                if handle_bridge_response(response, &events_tx) {
-                                    break;
-                                }
-                            }
-                            Err(_) => {
-                                logger::warn("bridge response channel closed");
-                                let _ = events_tx.send(StreamEvent::Error(
-                                    "bridge response channel closed".to_string(),
-                                ));
-                                break;
-                            }
-                        }
-                    }
-                });
-            }
-            Err(err) => {
-                logger::warn(&format!("bridge request failed: {err}"));
-                let _ = events_tx.send(StreamEvent::Error(err));
-            }
-        }
-
-        AgentStream { events: events_rx }
-    }
-
-    fn abort(&self) {}
-
-    fn status(&self) -> AgentStatus {
-        AgentStatus::Idle
-    }
-
-    fn info(&self) -> AgentInfo {
-        self.info.clone()
-    }
-}
-
-#[derive(Serialize)]
-struct BridgeRequest {
-    id: String,
-    method: String,
-    params: BridgeParams,
-}
-
-#[derive(Serialize)]
-struct BridgeParams {
-    agent_id: String,
-    text: String,
-    attachments: Vec<BridgeAttachment>,
-    context: Option<BridgeContext>,
-}
-
-impl BridgeParams {
-    fn from_message(info: &AgentInfo, message: UserMessage) -> Self {
-        Self {
-            agent_id: info.id.clone(),
-            text: message.text,
-            attachments: message
-                .attachments
-                .into_iter()
-                .map(BridgeAttachment::from)
-                .collect(),
-            context: message.context.map(BridgeContext::from),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct BridgeAttachment {
-    name: String,
-    path: Option<String>,
-}
-
-impl From<Attachment> for BridgeAttachment {
-    fn from(value: Attachment) -> Self {
-        Self {
-            name: value.name,
-            path: value.path.map(|path| path.display().to_string()),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct BridgeContext {
-    cwd: Option<String>,
-}
-
-impl From<WorkingContext> for BridgeContext {
-    fn from(value: WorkingContext) -> Self {
-        Self {
-            cwd: value.cwd.map(|path| path.display().to_string()),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct BridgeResponse {
-    id: String,
-    event: Option<BridgeEvent>,
-    result: Option<BridgeResult>,
-    error: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct BridgeResult {
-    text: String,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum BridgeEvent {
-    TextDelta { delta: String },
-    ToolStart { name: String, input: String },
-    ToolResult { name: String, output: String },
-    TokenUsage { input: u32, output: u32 },
-    Done,
-    Error { message: String },
-}
-
-impl BridgeResponse {
-    fn is_terminal(&self) -> bool {
-        if self.error.is_some() || self.result.is_some() {
-            return true;
-        }
-        matches!(
-            self.event,
-            Some(BridgeEvent::Done | BridgeEvent::Error { .. })
-        )
-    }
-}
-
-#[derive(Clone)]
-struct NullAgent {
-    info: AgentInfo,
-}
-
-impl NullAgent {
-    fn new(info: AgentInfo) -> Self {
-        Self { info }
-    }
-}
-
-impl Agent for NullAgent {
-    fn send(&self, _message: UserMessage) -> AgentStream {
-        let (tx, rx) = mpsc::channel();
-        let _ = tx.send(StreamEvent::TextDelta(
-            "Bridge not running. Build bridge and restart the app.".to_string(),
-        ));
-        let _ = tx.send(StreamEvent::Done);
-        AgentStream { events: rx }
-    }
-
-    fn abort(&self) {}
-
-    fn status(&self) -> AgentStatus {
-        AgentStatus::Idle
-    }
-
-    fn info(&self) -> AgentInfo {
-        self.info.clone()
+        Box::new(RustAgent::new(info.clone()))
     }
 }
 
@@ -398,97 +53,513 @@ fn stream_text(text: String, tx: &mpsc::Sender<StreamEvent>) {
     }
 }
 
-fn handle_bridge_response(response: BridgeResponse, tx: &mpsc::Sender<StreamEvent>) -> bool {
-    if let Some(error) = response.error {
-        logger::warn(&format!(
-            "bridge response error id={} error={}",
-            response.id.as_str(),
-            error.as_str()
-        ));
-        let _ = tx.send(StreamEvent::Error(error));
-        return true;
-    }
-
-    if let Some(result) = response.result {
-        logger::debug(&format!(
-            "bridge response ok id={} text_len={}",
-            response.id.as_str(),
-            result.text.len()
-        ));
-        stream_text(result.text, tx);
-        let _ = tx.send(StreamEvent::Done);
-        return true;
-    }
-
-    if let Some(event) = response.event {
-        return handle_bridge_event(response.id, event, tx);
-    }
-
-    logger::debug(&format!(
-        "bridge response empty id={}",
-        response.id.as_str()
-    ));
-    let _ = tx.send(StreamEvent::Done);
-    true
+#[derive(Clone)]
+struct RustAgent {
+    info: AgentInfo,
 }
 
-fn handle_bridge_event(id: String, event: BridgeEvent, tx: &mpsc::Sender<StreamEvent>) -> bool {
-    match event {
-        BridgeEvent::TextDelta { delta } => {
-            logger::debug(&format!(
-                "bridge event text_delta id={} len={}",
-                id.as_str(),
-                delta.len()
-            ));
-            let _ = tx.send(StreamEvent::TextDelta(delta));
-            false
-        }
-        BridgeEvent::ToolStart { name, input } => {
-            logger::debug(&format!(
-                "bridge event tool_start id={} tool={}",
-                id.as_str(),
-                name.as_str()
-            ));
-            let _ = tx.send(StreamEvent::ToolStart { name, input });
-            false
-        }
-        BridgeEvent::ToolResult { name, output } => {
-            logger::debug(&format!(
-                "bridge event tool_result id={} tool={}",
-                id.as_str(),
-                name.as_str()
-            ));
-            let _ = tx.send(StreamEvent::ToolResult { name, output });
-            false
-        }
-        BridgeEvent::TokenUsage { input, output } => {
-            logger::debug(&format!(
-                "bridge event token_usage id={} in={} out={}",
-                id.as_str(),
-                input,
-                output
-            ));
-            let _ = tx.send(StreamEvent::TokenUsage { input, output });
-            false
-        }
-        BridgeEvent::Done => {
-            logger::debug(&format!("bridge event done id={}", id.as_str()));
+impl RustAgent {
+    fn new(info: AgentInfo) -> Self {
+        Self { info }
+    }
+}
+
+impl Agent for RustAgent {
+    fn send(&self, message: UserMessage) -> AgentStream {
+        let (events_tx, events_rx) = mpsc::channel();
+        let info = self.info.clone();
+        thread::spawn(move || {
+            let result = match info.kind {
+                AgentKind::Claude => send_claude_stream(&info, &message, &events_tx),
+                AgentKind::Codex => send_openai_stream(&info, &message, &events_tx),
+                AgentKind::OpenCode => send_opencode_stream(&info, &message, &events_tx),
+                AgentKind::Gemini => send_gemini_request(&info, &message, &events_tx),
+            };
+            if let Err(err) = result {
+                let _ = events_tx.send(StreamEvent::Error(err));
+            }
+        });
+        AgentStream { events: events_rx }
+    }
+
+    fn abort(&self) {}
+
+    fn status(&self) -> AgentStatus {
+        AgentStatus::Idle
+    }
+
+    fn info(&self) -> AgentInfo {
+        self.info.clone()
+    }
+}
+
+struct OpenAiToolCall {
+    name: String,
+    args: String,
+}
+
+fn send_openai_stream(
+    info: &AgentInfo,
+    message: &UserMessage,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> Result<(), String> {
+    let OpenAiConfig {
+        api_key,
+        base_url,
+        model,
+    } = openai_config(info)?;
+    let client = build_http_client()?;
+    let request_body = serde_json::json!({
+        "model": model,
+        "stream": true,
+        "stream_options": { "include_usage": true },
+        "messages": [{ "role": "user", "content": message.text.as_str() }],
+    });
+    let url = format!("{}/chat/completions", base_url);
+    let response = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&request_body)
+        .send()
+        .map_err(|err| format!("OpenAI request failed: {err}"))?;
+
+    let response = ensure_success(response)?;
+    let mut tool_calls: HashMap<String, OpenAiToolCall> = HashMap::new();
+    parse_sse_stream(response, |data| {
+        if data == "[DONE]" {
+            if !tool_calls.is_empty() {
+                flush_tool_calls(&tool_calls, tx);
+                tool_calls.clear();
+            }
             let _ = tx.send(StreamEvent::Done);
-            true
+            return Ok(true);
         }
-        BridgeEvent::Error { message } => {
-            logger::warn(&format!(
-                "bridge event error id={} message={}",
-                id.as_str(),
-                message.as_str()
-            ));
-            let _ = tx.send(StreamEvent::Error(message));
-            true
+
+        let payload: Value = serde_json::from_str(data)
+            .map_err(|err| format!("OpenAI stream decode failed: {err}"))?;
+        let choice = payload.get("choices").and_then(|v| v.get(0));
+        if let Some(content) = choice
+            .and_then(|c| c.get("delta"))
+            .and_then(|delta| delta.get("content"))
+            .and_then(Value::as_str)
+        {
+            let _ = tx.send(StreamEvent::TextDelta(content.to_string()));
         }
+
+        if let Some(tool_calls_delta) = choice
+            .and_then(|c| c.get("delta"))
+            .and_then(|delta| delta.get("tool_calls"))
+            .and_then(Value::as_array)
+        {
+            for call in tool_calls_delta {
+                let call_id = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool-call")
+                    .to_string();
+                let name = call
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .map(|value| value.to_string());
+                let args = call
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                    .map(|value| value.to_string());
+                track_openai_tool_call(&mut tool_calls, call_id, name, args);
+            }
+        }
+
+        if let Some(function_call) = choice
+            .and_then(|c| c.get("delta"))
+            .and_then(|delta| delta.get("function_call"))
+        {
+            let name = function_call
+                .get("name")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            let args = function_call
+                .get("arguments")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            track_openai_tool_call(&mut tool_calls, "function-call".to_string(), name, args);
+        }
+
+        if let Some(finish_reason) = choice
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(Value::as_str)
+        {
+            if finish_reason == "tool_calls" && !tool_calls.is_empty() {
+                flush_tool_calls(&tool_calls, tx);
+                tool_calls.clear();
+            }
+        }
+
+        if let Some(usage) = payload.get("usage") {
+            let input = usage
+                .get("prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            let output = usage
+                .get("completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            let _ = tx.send(StreamEvent::TokenUsage { input, output });
+        }
+
+        Ok(false)
+    })
+}
+
+fn send_opencode_stream(
+    info: &AgentInfo,
+    message: &UserMessage,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> Result<(), String> {
+    send_openai_stream(info, message, tx)
+}
+
+fn send_claude_stream(
+    _info: &AgentInfo,
+    message: &UserMessage,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> Result<(), String> {
+    let api_key =
+        env::var("ANTHROPIC_API_KEY").map_err(|_| "Missing ANTHROPIC_API_KEY".to_string())?;
+    let model =
+        env::var("AUI_CLAUDE_MODEL").unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into());
+    let max_tokens = parse_u32_env("AUI_CLAUDE_MAX_TOKENS", 1024);
+    let base_url = env::var("AUI_CLAUDE_BASE_URL")
+        .ok()
+        .or_else(|| env::var("ANTHROPIC_BASE_URL").ok())
+        .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+
+    let request_body = serde_json::json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "stream": true,
+        "messages": [{ "role": "user", "content": message.text.as_str() }],
+    });
+    let client = build_http_client()?;
+    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+    let response = client
+        .post(url)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("accept", "text/event-stream")
+        .json(&request_body)
+        .send()
+        .map_err(|err| format!("Claude request failed: {err}"))?;
+
+    let response = ensure_success(response)?;
+    let mut input_tokens: Option<u32> = None;
+    parse_sse_stream_with_event(response, |event, data| {
+        let payload: Value = serde_json::from_str(data)
+            .map_err(|err| format!("Claude stream decode failed: {err}"))?;
+        match event {
+            "message_start" => {
+                if let Some(value) = payload
+                    .get("message")
+                    .and_then(|msg| msg.get("usage"))
+                    .and_then(|usage| usage.get("input_tokens"))
+                    .and_then(Value::as_u64)
+                {
+                    input_tokens = Some(value as u32);
+                }
+            }
+            "content_block_delta" => {
+                if let Some(text) = payload
+                    .get("delta")
+                    .and_then(|delta| delta.get("text"))
+                    .and_then(Value::as_str)
+                {
+                    let _ = tx.send(StreamEvent::TextDelta(text.to_string()));
+                }
+            }
+            "content_block_start" => {
+                let block = payload.get("content_block");
+                if block
+                    .and_then(|value| value.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("tool_use")
+                {
+                    let name = block
+                        .and_then(|value| value.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
+                    let input = block
+                        .and_then(|value| value.get("input"))
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "{}".to_string());
+                    let _ = tx.send(StreamEvent::ToolStart { name, input });
+                }
+            }
+            "message_delta" => {
+                if let Some(output_tokens) = payload
+                    .get("usage")
+                    .and_then(|usage| usage.get("output_tokens"))
+                    .and_then(Value::as_u64)
+                {
+                    let input = input_tokens.unwrap_or(0);
+                    let _ = tx.send(StreamEvent::TokenUsage {
+                        input,
+                        output: output_tokens as u32,
+                    });
+                }
+            }
+            "message_stop" => {
+                let _ = tx.send(StreamEvent::Done);
+                return Ok(true);
+            }
+            "error" => {
+                let message = payload
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Claude stream error")
+                    .to_string();
+                let _ = tx.send(StreamEvent::Error(message));
+                return Ok(true);
+            }
+            _ => {}
+        }
+        Ok(false)
+    })?;
+
+    Ok(())
+}
+
+fn send_gemini_request(
+    _info: &AgentInfo,
+    message: &UserMessage,
+    tx: &mpsc::Sender<StreamEvent>,
+) -> Result<(), String> {
+    let api_key = env::var("GEMINI_API_KEY")
+        .ok()
+        .or_else(|| env::var("GOOGLE_API_KEY").ok())
+        .ok_or_else(|| "Missing GEMINI_API_KEY or GOOGLE_API_KEY".to_string())?;
+    let model = env::var("AUI_GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-pro".into());
+    let base_url = env::var("AUI_GEMINI_BASE_URL")
+        .ok()
+        .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string());
+    let api_version = env::var("AUI_GEMINI_API_VERSION").unwrap_or_else(|_| "v1beta".into());
+
+    let url = format!(
+        "{}/{}/models/{}:generateContent?key={}",
+        base_url.trim_end_matches('/'),
+        api_version.trim_matches('/'),
+        model,
+        api_key
+    );
+    let request_body = serde_json::json!({
+        "contents": [{ "role": "user", "parts": [{ "text": message.text.as_str() }] }]
+    });
+    let client = build_http_client()?;
+    let response = client
+        .post(url)
+        .json(&request_body)
+        .send()
+        .map_err(|err| format!("Gemini request failed: {err}"))?;
+
+    let mut response = ensure_success(response)?;
+    let mut body = String::new();
+    response
+        .read_to_string(&mut body)
+        .map_err(|err| format!("Gemini response read failed: {err}"))?;
+    let payload: Value =
+        serde_json::from_str(&body).map_err(|err| format!("Gemini decode failed: {err}"))?;
+
+    let mut text = String::new();
+    if let Some(parts) = payload
+        .get("candidates")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(Value::as_array)
+    {
+        for part in parts {
+            if let Some(chunk) = part.get("text").and_then(Value::as_str) {
+                text.push_str(chunk);
+            }
+        }
+    }
+
+    if !text.is_empty() {
+        stream_text(text, tx);
+    }
+
+    if let Some(usage) = payload.get("usageMetadata") {
+        let input = usage
+            .get("promptTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let output = usage
+            .get("candidatesTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u32;
+        let _ = tx.send(StreamEvent::TokenUsage { input, output });
+    }
+
+    let _ = tx.send(StreamEvent::Done);
+    Ok(())
+}
+
+struct OpenAiConfig {
+    api_key: String,
+    base_url: String,
+    model: String,
+}
+
+fn openai_config(info: &AgentInfo) -> Result<OpenAiConfig, String> {
+    match info.kind {
+        AgentKind::Codex => {
+            let api_key =
+                env::var("OPENAI_API_KEY").map_err(|_| "Missing OPENAI_API_KEY".to_string())?;
+            let base_url =
+                env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
+            let model = env::var("AUI_CODEX_MODEL")
+                .ok()
+                .or_else(|| env::var("OPENAI_MODEL").ok())
+                .unwrap_or_else(|| "gpt-4o-mini".to_string());
+            Ok(OpenAiConfig {
+                api_key,
+                base_url: base_url.trim_end_matches('/').to_string(),
+                model,
+            })
+        }
+        AgentKind::OpenCode => {
+            let api_key =
+                env::var("OPENCODE_API_KEY").map_err(|_| "Missing OPENCODE_API_KEY".to_string())?;
+            let base_url = env::var("OPENCODE_BASE_URL")
+                .map_err(|_| "Missing OPENCODE_BASE_URL".to_string())?;
+            let model =
+                env::var("AUI_OPENCODE_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
+            Ok(OpenAiConfig {
+                api_key,
+                base_url: base_url.trim_end_matches('/').to_string(),
+                model,
+            })
+        }
+        _ => Err(format!("Unsupported OpenAI agent: {}", info.kind.label())),
     }
 }
 
-fn bridge_entry_path() -> io::Result<PathBuf> {
-    let cwd = std::env::current_dir()?;
-    Ok(cwd.join("bridge").join("dist").join("index.js"))
+fn build_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|err| format!("HTTP client init failed: {err}"))
+}
+
+fn ensure_success(
+    response: reqwest::blocking::Response,
+) -> Result<reqwest::blocking::Response, String> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let body = response
+        .text()
+        .unwrap_or_else(|_| "unable to read error response".to_string());
+    Err(format!("HTTP {status}: {body}"))
+}
+
+fn parse_sse_stream<F>(response: reqwest::blocking::Response, mut handle: F) -> Result<(), String>
+where
+    F: FnMut(&str) -> Result<bool, String>,
+{
+    parse_sse_stream_with_event(response, |_, data| handle(data))
+}
+
+fn parse_sse_stream_with_event<F>(
+    response: reqwest::blocking::Response,
+    mut handle: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str, &str) -> Result<bool, String>,
+{
+    let mut reader = BufReader::new(response);
+    let mut event_type: Option<String> = None;
+    let mut data = String::new();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|err| format!("SSE read failed: {err}"))?;
+        if bytes == 0 {
+            if !data.is_empty() || event_type.is_some() {
+                let event = event_type.as_deref().unwrap_or("");
+                let payload = data.trim_end();
+                if handle(event, payload)? {
+                    return Ok(());
+                }
+            }
+            break;
+        }
+
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            if !data.is_empty() || event_type.is_some() {
+                let event = event_type.as_deref().unwrap_or("");
+                let payload = data.trim_end();
+                if handle(event, payload)? {
+                    return Ok(());
+                }
+            }
+            event_type = None;
+            data.clear();
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("event:") {
+            event_type = Some(rest.trim().to_string());
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.trim_start());
+        }
+    }
+
+    Ok(())
+}
+
+fn track_openai_tool_call(
+    tool_calls: &mut HashMap<String, OpenAiToolCall>,
+    id: String,
+    name: Option<String>,
+    args: Option<String>,
+) {
+    let entry = tool_calls.entry(id).or_insert(OpenAiToolCall {
+        name: name.clone().unwrap_or_else(|| "tool".to_string()),
+        args: String::new(),
+    });
+    if let Some(name) = name {
+        entry.name = name;
+    }
+    if let Some(args) = args {
+        entry.args.push_str(&args);
+    }
+}
+
+fn flush_tool_calls(tool_calls: &HashMap<String, OpenAiToolCall>, tx: &mpsc::Sender<StreamEvent>) {
+    for call in tool_calls.values() {
+        let _ = tx.send(StreamEvent::ToolStart {
+            name: call.name.clone(),
+            input: call.args.clone(),
+        });
+    }
+}
+
+fn parse_u32_env(key: &str, fallback: u32) -> u32 {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(fallback)
 }
