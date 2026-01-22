@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use gpui::{
-    Context, Entity, FontWeight, Window, div, hsla, linear_color_stop, linear_gradient, prelude::*,
-    px, rgb,
+    Context, Entity, FontWeight, ScrollHandle, Window, div, hsla, linear_color_stop,
+    linear_gradient, prelude::*, px, rgb,
 };
 
 use crate::actions::Submit;
@@ -22,6 +22,7 @@ pub struct AuiApp {
     status_note: String,
     storage: SessionStorage,
     stream_targets: HashMap<SessionId, usize>,
+    conversation_scroll: ScrollHandle,
 }
 
 impl AuiApp {
@@ -31,6 +32,7 @@ impl AuiApp {
         let bridge = BridgeClient::new();
         let storage = SessionStorage::new();
         let mut sessions = SessionManager::new();
+        let conversation_scroll = ScrollHandle::new();
         logger::debug("restoring sessions");
         restore_sessions(&bridge, &storage, &mut sessions);
         if sessions.sessions().is_empty() {
@@ -41,6 +43,9 @@ impl AuiApp {
             if let Some(first) = sessions.sessions().first() {
                 sessions.set_active(first.id);
             }
+        }
+        if sessions.active_id().is_some() {
+            conversation_scroll.scroll_to_bottom();
         }
         logger::debug(&format!(
             "sessions ready count={} active={}",
@@ -59,6 +64,7 @@ impl AuiApp {
             status_note: "Ready".to_string(),
             storage,
             stream_targets: HashMap::new(),
+            conversation_scroll,
         }
     }
 
@@ -74,6 +80,7 @@ impl AuiApp {
         logger::debug(&format!("session select id={}", id.value()));
         self.sessions.set_active(id);
         self.status_note = "Session focus updated".to_string();
+        self.conversation_scroll.scroll_to_bottom();
         cx.notify();
     }
 
@@ -94,6 +101,7 @@ impl AuiApp {
             .append_message(id, SessionRole::Assistant, "New session ready.".to_string());
         self.status_note = "New session created".to_string();
         self.persist_session(id);
+        self.conversation_scroll.scroll_to_bottom();
         cx.notify();
     }
 
@@ -156,6 +164,7 @@ impl AuiApp {
         if let Some(index) = assistant_index {
             self.stream_targets.insert(active_id, index);
         }
+        self.conversation_scroll.scroll_to_bottom();
 
         self.sessions.set_status(active_id, AgentStatus::Thinking);
         self.status_note = "Delivering to agent".to_string();
@@ -219,6 +228,7 @@ impl AuiApp {
                     }
                 }
                 self.persist_session(id);
+                self.conversation_scroll.scroll_to_bottom();
             }
             StreamEvent::ToolStart { name, input } => {
                 logger::debug(&format!(
@@ -235,6 +245,7 @@ impl AuiApp {
                 self.sessions
                     .set_status(id, AgentStatus::Executing { tool: name });
                 self.persist_session(id);
+                self.conversation_scroll.scroll_to_bottom();
             }
             StreamEvent::ToolResult { name, output } => {
                 logger::debug(&format!(
@@ -250,6 +261,7 @@ impl AuiApp {
                 );
                 self.sessions.set_status(id, AgentStatus::Thinking);
                 self.persist_session(id);
+                self.conversation_scroll.scroll_to_bottom();
             }
             StreamEvent::TokenUsage { input, output } => {
                 logger::debug(&format!(
@@ -267,6 +279,7 @@ impl AuiApp {
                 self.sessions.set_status(id, AgentStatus::Idle);
                 self.status_note = "Idle".to_string();
                 self.persist_session(id);
+                self.conversation_scroll.scroll_to_bottom();
             }
             StreamEvent::Error(message) => {
                 logger::warn(&format!(
@@ -275,14 +288,16 @@ impl AuiApp {
                     message.as_str()
                 ));
                 self.stream_targets.remove(&id);
+                let user_message = friendly_error_message(&message);
                 self.sessions.set_status(
                     id,
                     AgentStatus::Error {
-                        message: message.clone(),
+                        message: user_message.clone(),
                     },
                 );
-                self.status_note = format!("Error: {message}");
+                self.status_note = user_message;
                 self.persist_session(id);
+                self.conversation_scroll.scroll_to_bottom();
             }
         }
     }
@@ -430,6 +445,7 @@ impl Render for AuiApp {
                             .gap_3()
                             .id("conversation-scroll")
                             .overflow_y_scroll()
+                            .track_scroll(&self.conversation_scroll)
                             .child(conversation::render_conversation(active_session)),
                     )
                     .child(status_bar::render_status_bar(
@@ -527,4 +543,21 @@ fn resolve_stored_agent(bridge: &BridgeClient, stored: &StoredSession) -> AgentI
         stored.agent_name.clone(),
         AgentKind::Claude,
     )
+}
+
+fn friendly_error_message(raw: &str) -> String {
+    let message = raw.to_ascii_lowercase();
+    if message.contains("missing") && message.contains("api_key") {
+        return "Agent credentials are not configured.".to_string();
+    }
+    if message.contains("unauthorized") || message.contains("401") || message.contains("403") {
+        return "Agent authentication failed.".to_string();
+    }
+    if message.contains("timeout") {
+        return "Agent request timed out.".to_string();
+    }
+    if message.contains("http") {
+        return "Agent request failed. Check your network or settings.".to_string();
+    }
+    "Agent error. Check logs for details.".to_string()
 }

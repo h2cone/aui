@@ -9,15 +9,13 @@ pub fn render_status_bar(
     status_note: SharedString,
 ) -> impl IntoElement {
     let (label, detail, color) = status_label(status);
-    let elapsed = stats.elapsed().as_secs();
     let usage = format!("Tokens: {} in / {} out", stats.tokens_in, stats.tokens_out);
     let cost = format!("Cost: ${:.2}", stats.cost_usd);
-    let duration = format!("Session: {}s", elapsed);
 
     div()
         .flex()
-        .items_center()
-        .justify_between()
+        .flex_col()
+        .gap_2()
         .rounded_xl()
         .bg(white())
         .border_1()
@@ -29,6 +27,7 @@ pub fn render_status_bar(
                 .flex()
                 .items_center()
                 .gap_2()
+                .overflow_hidden()
                 .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(color))
                 .child(
                     div()
@@ -37,17 +36,25 @@ pub fn render_status_bar(
                         .text_color(rgb(0x0f172a))
                         .child(format!("{}{}", label, detail)),
                 )
-                .child(div().text_xs().text_color(rgb(0x64748b)).child(status_note)),
+                .child(
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .text_color(rgb(0x64748b))
+                        .truncate()
+                        .child(status_note),
+                ),
         )
         .child(
             div()
                 .flex()
+                .items_center()
+                .justify_end()
                 .gap_3()
                 .text_xs()
                 .text_color(rgb(0x475569))
                 .child(usage)
-                .child(cost)
-                .child(duration),
+                .child(cost),
         )
 }
 
