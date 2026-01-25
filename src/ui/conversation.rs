@@ -21,31 +21,16 @@ pub fn render_conversation(
             let (label, bubble_bg, text_color) = style_for_role(&message.role);
             let mut body_children = Vec::new();
 
-            if matches!(message.role, SessionRole::Tool) {
-                let key = crate::app::ShellKey::new(session.id, message_index, 0);
-                let collapsed = view.shell_collapsed(key).unwrap_or(false);
-                body_children.push(
-                    shell_output(
-                        SharedString::from("Shell"),
-                        SharedString::from(message.content.clone()),
-                        key,
-                        collapsed,
-                        cx,
-                    )
-                    .into_any_element(),
-                );
-            } else {
-                let blocks = parse_blocks(&message.content);
-                for (block_index, block) in blocks.into_iter().enumerate() {
-                    body_children.push(render_block(
-                        view,
-                        session.id,
-                        message_index,
-                        block_index,
-                        block,
-                        cx,
-                    ));
-                }
+            let blocks = parse_blocks(&message.content);
+            for (block_index, block) in blocks.into_iter().enumerate() {
+                body_children.push(render_block(
+                    view,
+                    session.id,
+                    message_index,
+                    block_index,
+                    block,
+                    cx,
+                ));
             }
 
             if body_children.is_empty() {

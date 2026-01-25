@@ -3,7 +3,7 @@ use gpui::{
     prelude::*, px, rgb,
 };
 
-use crate::agent::AgentStatus;
+use crate::agent::SessionStatus;
 use crate::app::AuiApp;
 
 pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoElement {
@@ -81,10 +81,10 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                                             MouseButton::Left,
                                             cx.listener(move |view, _, _, cx| {
                                                 cx.stop_propagation();
-                                                view.cycle_session_agent(id, cx);
+                                                view.cycle_session_provider(id, cx);
                                             }),
                                         )
-                                        .child(session.agent.name.clone()),
+                                        .child(session.provider.name.clone()),
                                 ),
                         ),
                 )
@@ -140,12 +140,7 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                         .text_color(rgb(0x0b1220))
                         .child("AUI Desktop"),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(0x5b6777))
-                        .child("Unified agent sessions"),
-                ),
+                .child(div().text_xs().text_color(rgb(0x5b6777)).child("Sessions")),
         )
         .child(
             div()
@@ -170,7 +165,7 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                 .gap_2()
                 .text_xs()
                 .text_color(rgb(0x5b6777))
-                .child("New session agent:")
+                .child("New session provider:")
                 .child(
                     div()
                         .px(px(10.))
@@ -184,9 +179,9 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|view, _, _, cx| view.cycle_new_session_agent(cx)),
+                            cx.listener(|view, _, _, cx| view.cycle_new_session_provider(cx)),
                         )
-                        .child(view.new_session_agent_label()),
+                        .child(view.new_session_provider_label()),
                 ),
         )
         .child(
@@ -198,12 +193,12 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
         .child(div().flex().flex_col().gap_2().children(session_rows))
 }
 
-fn status_color(status: &AgentStatus) -> gpui::Hsla {
+fn status_color(status: &SessionStatus) -> gpui::Hsla {
     match status {
-        AgentStatus::Idle => hsla(0.0, 0.0, 0.6, 0.45),
-        AgentStatus::Thinking => hsla(0.53, 0.65, 0.55, 0.9),
-        AgentStatus::Executing { .. } => hsla(0.08, 0.75, 0.55, 0.9),
-        AgentStatus::WaitingInput { .. } => hsla(0.12, 0.85, 0.52, 0.85),
-        AgentStatus::Error { .. } => hsla(0.0, 0.7, 0.55, 0.9),
+        SessionStatus::Idle => hsla(0.0, 0.0, 0.6, 0.45),
+        SessionStatus::Thinking => hsla(0.53, 0.65, 0.55, 0.9),
+        SessionStatus::Executing { .. } => hsla(0.08, 0.75, 0.55, 0.9),
+        SessionStatus::WaitingInput { .. } => hsla(0.12, 0.85, 0.52, 0.85),
+        SessionStatus::Error { .. } => hsla(0.0, 0.7, 0.55, 0.9),
     }
 }

@@ -1,5 +1,5 @@
-use crate::agent::{AgentInfo, AgentKind};
+use crate::agent::{ProviderInfo, ProviderKind};
 
-pub fn info() -> AgentInfo {
-    AgentInfo::new("opencode-cli", "OpenCode CLI", AgentKind::OpenCode)
+pub fn info() -> ProviderInfo {
+    ProviderInfo::new("opencode-cli", "OpenCode", ProviderKind::OpenCode)
 }

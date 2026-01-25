@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    pub default_agent_id: String,
+    pub default_provider_id: String,
     pub debug: bool,
 }
 
@@ -12,17 +12,20 @@ impl Config {
     pub fn load() -> Self {
         let path = config_dir().join("config.toml");
         let mut debug = false;
-        let mut default_agent_id = "claude-code".to_string();
+        let mut default_provider_id = "claude-code".to_string();
         if let Ok(contents) = fs::read_to_string(path) {
-            if let Some(value) = parse_value(&contents, "default_agent_id") {
-                default_agent_id = value;
+            // Backward compatible with older configs.
+            if let Some(value) = parse_value(&contents, "default_provider_id")
+                .or_else(|| parse_value(&contents, "default_agent_id"))
+            {
+                default_provider_id = value;
             }
             debug = parse_bool(&contents, "debug")
                 .or_else(|| parse_bool(&contents, "debug_mode"))
                 .unwrap_or(false);
         }
         Self {
-            default_agent_id,
+            default_provider_id,
             debug,
         }
     }
@@ -104,11 +107,11 @@ mod tests {
     fn parse_value_reads_key() {
         let contents = r#"
 # comment
-default_agent_id = "codex-cli"
+default_provider_id = "codex-cli"
 debug = true
 "#;
         assert_eq!(
-            parse_value(contents, "default_agent_id"),
+            parse_value(contents, "default_provider_id"),
             Some("codex-cli".to_string())
         );
         assert_eq!(parse_value(contents, "missing"), None);

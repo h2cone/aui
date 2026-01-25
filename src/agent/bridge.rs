@@ -9,87 +9,91 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::agent::{
-    Agent, AgentInfo, AgentKind, AgentStatus, AgentStream, StreamEvent, UserMessage,
+    ProviderClient, ProviderEvent, ProviderInfo, ProviderKind, ProviderStream, SessionStatus,
+    UserMessage,
 };
 use crate::logger;
 
 pub struct BridgeClient {
-    agents: Vec<AgentInfo>,
+    providers: Vec<ProviderInfo>,
 }
 
 impl BridgeClient {
     pub fn new() -> Self {
-        let agents = crate::agent::adapters::available_agents();
+        let providers = crate::agent::adapters::available_providers();
         logger::debug(&format!(
-            "bridge client init agents={} transport=rust",
-            agents.len()
+            "bridge client init providers={} transport=rust",
+            providers.len()
         ));
-        Self { agents }
+        Self { providers }
     }
 
-    pub fn agents(&self) -> &[AgentInfo] {
-        &self.agents
+    pub fn providers(&self) -> &[ProviderInfo] {
+        &self.providers
     }
 
-    pub fn agent_by_id(&self, id: &str) -> Option<AgentInfo> {
-        self.agents.iter().find(|agent| agent.id == id).cloned()
+    pub fn provider_by_id(&self, id: &str) -> Option<ProviderInfo> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id == id)
+            .cloned()
     }
 
-    pub fn connect(&self, info: &AgentInfo) -> Box<dyn Agent> {
-        Box::new(RustAgent::new(info.clone()))
+    pub fn connect(&self, info: &ProviderInfo) -> Box<dyn ProviderClient> {
+        Box::new(RustProvider::new(info.clone()))
     }
 }
 
-fn stream_text(text: String, tx: &mpsc::Sender<StreamEvent>) {
+fn stream_text(text: String, tx: &mpsc::Sender<ProviderEvent>) {
     let mut chunk = String::new();
     for ch in text.chars() {
         chunk.push(ch);
         if chunk.len() >= 64 {
-            let _ = tx.send(StreamEvent::TextDelta(chunk.clone()));
+            let _ = tx.send(ProviderEvent::TextDelta(chunk.clone()));
             chunk.clear();
         }
     }
     if !chunk.is_empty() {
-        let _ = tx.send(StreamEvent::TextDelta(chunk));
+        let _ = tx.send(ProviderEvent::TextDelta(chunk));
     }
 }
 
 #[derive(Clone)]
-struct RustAgent {
-    info: AgentInfo,
+struct RustProvider {
+    info: ProviderInfo,
 }
 
-impl RustAgent {
-    fn new(info: AgentInfo) -> Self {
+impl RustProvider {
+    fn new(info: ProviderInfo) -> Self {
         Self { info }
     }
 }
 
-impl Agent for RustAgent {
-    fn send(&self, message: UserMessage) -> AgentStream {
+impl ProviderClient for RustProvider {
+    fn send(&self, message: UserMessage) -> ProviderStream {
         let (events_tx, events_rx) = mpsc::channel();
         let info = self.info.clone();
         thread::spawn(move || {
             let result = match info.kind {
-                AgentKind::Claude => send_claude_stream(&info, &message, &events_tx),
-                AgentKind::Codex => send_openai_stream(&info, &message, &events_tx),
-                AgentKind::OpenCode => send_opencode_stream(&info, &message, &events_tx),
-                AgentKind::Gemini => send_gemini_request(&info, &message, &events_tx),
+                ProviderKind::Anthropic => send_claude_stream(&info, &message, &events_tx),
+                ProviderKind::OpenAI => send_openai_stream(&info, &message, &events_tx),
+                ProviderKind::OpenCode => send_opencode_stream(&info, &message, &events_tx),
+                ProviderKind::Google => send_gemini_request(&info, &message, &events_tx),
             };
             if let Err(err) = result {
-                let _ = events_tx.send(StreamEvent::Error(err));
+                let _ = events_tx.send(ProviderEvent::Error(err));
             }
         });
-        AgentStream { events: events_rx }
+        ProviderStream { events: events_rx }
     }
 
     fn abort(&self) {}
 
-    fn status(&self) -> AgentStatus {
-        AgentStatus::Idle
+    fn status(&self) -> SessionStatus {
+        SessionStatus::Idle
     }
 
-    fn info(&self) -> AgentInfo {
+    fn info(&self) -> ProviderInfo {
         self.info.clone()
     }
 }
@@ -100,9 +104,9 @@ struct OpenAiToolCall {
 }
 
 fn send_openai_stream(
-    info: &AgentInfo,
+    info: &ProviderInfo,
     message: &UserMessage,
-    tx: &mpsc::Sender<StreamEvent>,
+    tx: &mpsc::Sender<ProviderEvent>,
 ) -> Result<(), String> {
     let OpenAiConfig {
         api_key,
@@ -133,7 +137,7 @@ fn send_openai_stream(
                 flush_tool_calls(&tool_calls, tx);
                 tool_calls.clear();
             }
-            let _ = tx.send(StreamEvent::Done);
+            let _ = tx.send(ProviderEvent::Done);
             return Ok(true);
         }
 
@@ -145,7 +149,7 @@ fn send_openai_stream(
             .and_then(|delta| delta.get("content"))
             .and_then(Value::as_str)
         {
-            let _ = tx.send(StreamEvent::TextDelta(content.to_string()));
+            let _ = tx.send(ProviderEvent::TextDelta(content.to_string()));
         }
 
         if let Some(tool_calls_delta) = choice
@@ -207,7 +211,7 @@ fn send_openai_stream(
                 .get("completion_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32;
-            let _ = tx.send(StreamEvent::TokenUsage { input, output });
+            let _ = tx.send(ProviderEvent::TokenUsage { input, output });
         }
 
         Ok(false)
@@ -215,17 +219,17 @@ fn send_openai_stream(
 }
 
 fn send_opencode_stream(
-    info: &AgentInfo,
+    info: &ProviderInfo,
     message: &UserMessage,
-    tx: &mpsc::Sender<StreamEvent>,
+    tx: &mpsc::Sender<ProviderEvent>,
 ) -> Result<(), String> {
     send_openai_stream(info, message, tx)
 }
 
 fn send_claude_stream(
-    _info: &AgentInfo,
+    _info: &ProviderInfo,
     message: &UserMessage,
-    tx: &mpsc::Sender<StreamEvent>,
+    tx: &mpsc::Sender<ProviderEvent>,
 ) -> Result<(), String> {
     let api_key =
         env::var("ANTHROPIC_API_KEY").map_err(|_| "Missing ANTHROPIC_API_KEY".to_string())?;
@@ -276,7 +280,7 @@ fn send_claude_stream(
                     .and_then(|delta| delta.get("text"))
                     .and_then(Value::as_str)
                 {
-                    let _ = tx.send(StreamEvent::TextDelta(text.to_string()));
+                    let _ = tx.send(ProviderEvent::TextDelta(text.to_string()));
                 }
             }
             "content_block_start" => {
@@ -295,7 +299,7 @@ fn send_claude_stream(
                         .and_then(|value| value.get("input"))
                         .map(|value| value.to_string())
                         .unwrap_or_else(|| "{}".to_string());
-                    let _ = tx.send(StreamEvent::ToolStart { name, input });
+                    let _ = tx.send(ProviderEvent::ToolStart { name, input });
                 }
             }
             "message_delta" => {
@@ -305,14 +309,14 @@ fn send_claude_stream(
                     .and_then(Value::as_u64)
                 {
                     let input = input_tokens.unwrap_or(0);
-                    let _ = tx.send(StreamEvent::TokenUsage {
+                    let _ = tx.send(ProviderEvent::TokenUsage {
                         input,
                         output: output_tokens as u32,
                     });
                 }
             }
             "message_stop" => {
-                let _ = tx.send(StreamEvent::Done);
+                let _ = tx.send(ProviderEvent::Done);
                 return Ok(true);
             }
             "error" => {
@@ -321,7 +325,7 @@ fn send_claude_stream(
                     .and_then(Value::as_str)
                     .unwrap_or("Claude stream error")
                     .to_string();
-                let _ = tx.send(StreamEvent::Error(message));
+                let _ = tx.send(ProviderEvent::Error(message));
                 return Ok(true);
             }
             _ => {}
@@ -333,9 +337,9 @@ fn send_claude_stream(
 }
 
 fn send_gemini_request(
-    _info: &AgentInfo,
+    _info: &ProviderInfo,
     message: &UserMessage,
-    tx: &mpsc::Sender<StreamEvent>,
+    tx: &mpsc::Sender<ProviderEvent>,
 ) -> Result<(), String> {
     let api_key = env::var("GEMINI_API_KEY")
         .ok()
@@ -401,10 +405,10 @@ fn send_gemini_request(
             .get("candidatesTokenCount")
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32;
-        let _ = tx.send(StreamEvent::TokenUsage { input, output });
+        let _ = tx.send(ProviderEvent::TokenUsage { input, output });
     }
 
-    let _ = tx.send(StreamEvent::Done);
+    let _ = tx.send(ProviderEvent::Done);
     Ok(())
 }
 
@@ -414,9 +418,9 @@ struct OpenAiConfig {
     model: String,
 }
 
-fn openai_config(info: &AgentInfo) -> Result<OpenAiConfig, String> {
+fn openai_config(info: &ProviderInfo) -> Result<OpenAiConfig, String> {
     match info.kind {
-        AgentKind::Codex => {
+        ProviderKind::OpenAI => {
             let api_key =
                 env::var("OPENAI_API_KEY").map_err(|_| "Missing OPENAI_API_KEY".to_string())?;
             let base_url =
@@ -431,7 +435,7 @@ fn openai_config(info: &AgentInfo) -> Result<OpenAiConfig, String> {
                 model,
             })
         }
-        AgentKind::OpenCode => {
+        ProviderKind::OpenCode => {
             let api_key =
                 env::var("OPENCODE_API_KEY").map_err(|_| "Missing OPENCODE_API_KEY".to_string())?;
             let base_url = env::var("OPENCODE_BASE_URL")
@@ -444,7 +448,10 @@ fn openai_config(info: &AgentInfo) -> Result<OpenAiConfig, String> {
                 model,
             })
         }
-        _ => Err(format!("Unsupported OpenAI agent: {}", info.kind.label())),
+        _ => Err(format!(
+            "Unsupported OpenAI provider: {}",
+            info.kind.label()
+        )),
     }
 }
 
@@ -551,9 +558,12 @@ fn track_openai_tool_call(
     }
 }
 
-fn flush_tool_calls(tool_calls: &HashMap<String, OpenAiToolCall>, tx: &mpsc::Sender<StreamEvent>) {
+fn flush_tool_calls(
+    tool_calls: &HashMap<String, OpenAiToolCall>,
+    tx: &mpsc::Sender<ProviderEvent>,
+) {
     for call in tool_calls.values() {
-        let _ = tx.send(StreamEvent::ToolStart {
+        let _ = tx.send(ProviderEvent::ToolStart {
             name: call.name.clone(),
             input: call.args.clone(),
         });

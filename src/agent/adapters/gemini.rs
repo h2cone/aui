@@ -1,5 +1,5 @@
-use crate::agent::{AgentInfo, AgentKind};
+use crate::agent::{ProviderInfo, ProviderKind};
 
-pub fn info() -> AgentInfo {
-    AgentInfo::new("gemini-cli", "Gemini CLI", AgentKind::Gemini)
+pub fn info() -> ProviderInfo {
+    ProviderInfo::new("gemini-cli", "Google", ProviderKind::Google)
 }

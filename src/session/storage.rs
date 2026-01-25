@@ -16,8 +16,8 @@ pub struct SessionStorage {
 pub struct StoredSession {
     pub id: SessionId,
     pub title: String,
-    pub agent_id: String,
-    pub agent_name: String,
+    pub provider_id: String,
+    pub provider_name: String,
     pub messages: Vec<SessionMessage>,
 }
 
@@ -74,8 +74,8 @@ impl SessionStorage {
             sessions.push(StoredSession {
                 id: SessionId::new(meta.id),
                 title: meta.title,
-                agent_id: meta.agent_id,
-                agent_name: meta.agent_name,
+                provider_id: meta.provider_id,
+                provider_name: meta.provider_name,
                 messages,
             });
         }
@@ -126,8 +126,8 @@ impl SessionStorage {
         let payload = Meta {
             id: session.id.value(),
             title: session.title.clone(),
-            agent_id: session.agent.id.clone(),
-            agent_name: session.agent.name.clone(),
+            provider_id: session.provider.id.clone(),
+            provider_name: session.provider.name.clone(),
         };
         let data = serde_json::to_vec(&payload)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
@@ -161,8 +161,11 @@ impl SessionStorage {
 struct Meta {
     id: u64,
     title: String,
-    agent_id: String,
-    agent_name: String,
+    // Backward compatible with older on-disk sessions.
+    #[serde(alias = "agent_id")]
+    provider_id: String,
+    #[serde(alias = "agent_name")]
+    provider_name: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -204,7 +207,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::agent::{AgentInfo, AgentKind, AgentStatus};
+    use crate::agent::{ProviderInfo, ProviderKind, SessionStatus};
     use crate::session::{Session, SessionMessage, SessionRole, SessionStats};
 
     fn sample_session(id: u64) -> Session {
@@ -212,8 +215,8 @@ mod tests {
         Session {
             id: SessionId::new(id),
             title: "alpha".to_string(),
-            agent: AgentInfo::new("test", "Test Agent", AgentKind::Claude),
-            status: AgentStatus::Idle,
+            provider: ProviderInfo::new("test", "Test Provider", ProviderKind::Anthropic),
+            status: SessionStatus::Idle,
             stats: SessionStats::new(),
             messages: vec![
                 SessionMessage {
@@ -251,8 +254,8 @@ mod tests {
         let stored = &loaded[0];
         assert_eq!(stored.id.value(), session.id.value());
         assert_eq!(stored.title, session.title);
-        assert_eq!(stored.agent_id, session.agent.id);
-        assert_eq!(stored.agent_name, session.agent.name);
+        assert_eq!(stored.provider_id, session.provider.id);
+        assert_eq!(stored.provider_name, session.provider.name);
         assert_eq!(stored.messages.len(), session.messages.len());
         assert_eq!(stored.messages[0].content, "hello");
         let ts = stored.messages[0]

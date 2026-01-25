@@ -5,14 +5,14 @@ pub mod adapters;
 pub mod bridge;
 
 #[derive(Clone, Debug)]
-pub struct AgentInfo {
+pub struct ProviderInfo {
     pub id: String,
     pub name: String,
-    pub kind: AgentKind,
+    pub kind: ProviderKind,
 }
 
-impl AgentInfo {
-    pub fn new(id: impl Into<String>, name: impl Into<String>, kind: AgentKind) -> Self {
+impl ProviderInfo {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, kind: ProviderKind) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -22,29 +22,29 @@ impl AgentInfo {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgentKind {
-    Claude,
-    Codex,
-    Gemini,
+pub enum ProviderKind {
+    Anthropic,
+    OpenAI,
+    Google,
     OpenCode,
 }
 
-impl AgentKind {
+impl ProviderKind {
     pub const fn label(self) -> &'static str {
         match self {
-            AgentKind::Claude => "Claude",
-            AgentKind::Codex => "Codex",
-            AgentKind::Gemini => "Gemini",
-            AgentKind::OpenCode => "OpenCode",
+            ProviderKind::Anthropic => "Anthropic",
+            ProviderKind::OpenAI => "OpenAI",
+            ProviderKind::Google => "Google",
+            ProviderKind::OpenCode => "OpenCode",
         }
     }
 }
 
-pub trait Agent: Send + Sync {
-    fn send(&self, message: UserMessage) -> AgentStream;
+pub trait ProviderClient: Send + Sync {
+    fn send(&self, message: UserMessage) -> ProviderStream;
     fn abort(&self);
-    fn status(&self) -> AgentStatus;
-    fn info(&self) -> AgentInfo;
+    fn status(&self) -> SessionStatus;
+    fn info(&self) -> ProviderInfo;
 }
 
 #[derive(Clone, Debug)]
@@ -66,7 +66,7 @@ pub struct WorkingContext {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AgentStatus {
+pub enum SessionStatus {
     Idle,
     Thinking,
     Executing { tool: String },
@@ -74,12 +74,12 @@ pub enum AgentStatus {
     Error { message: String },
 }
 
-pub struct AgentStream {
-    pub events: Receiver<StreamEvent>,
+pub struct ProviderStream {
+    pub events: Receiver<ProviderEvent>,
 }
 
 #[derive(Clone, Debug)]
-pub enum StreamEvent {
+pub enum ProviderEvent {
     TextDelta(String),
     ToolStart { name: String, input: String },
     ToolResult { name: String, output: String },

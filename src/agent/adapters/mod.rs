@@ -3,9 +3,9 @@ pub mod codex;
 pub mod gemini;
 pub mod opencode;
 
-use crate::agent::AgentInfo;
+use crate::agent::ProviderInfo;
 
-pub fn available_agents() -> Vec<AgentInfo> {
+pub fn available_providers() -> Vec<ProviderInfo> {
     vec![
         claude::info(),
         codex::info(),

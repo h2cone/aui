@@ -1,5 +1,5 @@
-use crate::agent::{AgentInfo, AgentKind};
+use crate::agent::{ProviderInfo, ProviderKind};
 
-pub fn info() -> AgentInfo {
-    AgentInfo::new("claude-code", "Claude Code", AgentKind::Claude)
+pub fn info() -> ProviderInfo {
+    ProviderInfo::new("claude-code", "Anthropic", ProviderKind::Anthropic)
 }

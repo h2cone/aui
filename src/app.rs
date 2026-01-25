@@ -11,7 +11,8 @@ use gpui::{
 use crate::actions::{AttachFiles, ClearAttachments, ExportSession, Submit};
 use crate::agent::bridge::BridgeClient;
 use crate::agent::{
-    AgentInfo, AgentKind, AgentStatus, Attachment, StreamEvent, UserMessage, WorkingContext,
+    Attachment, ProviderEvent, ProviderInfo, ProviderKind, SessionStatus, UserMessage,
+    WorkingContext,
 };
 use crate::config;
 use crate::logger;
@@ -27,7 +28,7 @@ pub struct AuiApp {
     sessions: SessionManager,
     bridge: BridgeClient,
     attachments: Vec<Attachment>,
-    new_session_agent_id: String,
+    new_session_provider_id: String,
     storage: SessionStorage,
     stream_targets: HashMap<SessionId, usize>,
     diff_decisions: HashMap<DiffKey, DiffDecision>,
@@ -123,9 +124,9 @@ impl AuiApp {
             }
         }
 
-        let new_session_agent_id = bridge
-            .agent_by_id(&config.default_agent_id)
-            .map(|agent| agent.id)
+        let new_session_provider_id = bridge
+            .provider_by_id(&config.default_provider_id)
+            .map(|provider| provider.id)
             .unwrap_or_else(|| "claude-code".to_string());
 
         Self {
@@ -133,7 +134,7 @@ impl AuiApp {
             sessions,
             bridge,
             attachments: Vec::new(),
-            new_session_agent_id,
+            new_session_provider_id,
             storage,
             stream_targets: HashMap::new(),
             diff_decisions,
@@ -160,17 +161,17 @@ impl AuiApp {
     pub fn new_session(&mut self, cx: &mut Context<Self>) {
         let next = self.sessions.sessions().len() + 1;
         let title = format!("session-{}", next);
-        let agent = self
+        let provider = self
             .bridge
-            .agent_by_id(&self.new_session_agent_id)
-            .unwrap_or_else(|| select_agent(&self.bridge, AgentKind::Claude));
-        let id = self.sessions.create_session(title, agent);
+            .provider_by_id(&self.new_session_provider_id)
+            .unwrap_or_else(|| select_provider(&self.bridge, ProviderKind::Anthropic));
+        let id = self.sessions.create_session(title, provider);
         logger::debug(&format!(
-            "session created id={} agent={}",
+            "session created id={} provider={}",
             id.value(),
             self.sessions
                 .session(id)
-                .map(|session| session.agent.id.clone())
+                .map(|session| session.provider.id.clone())
                 .unwrap_or_else(|| "unknown".to_string())
         ));
         self.sessions
@@ -180,41 +181,41 @@ impl AuiApp {
         cx.notify();
     }
 
-    pub fn new_session_agent_label(&self) -> String {
+    pub fn new_session_provider_label(&self) -> String {
         self.bridge
-            .agent_by_id(&self.new_session_agent_id)
-            .map(|agent| agent.name)
-            .unwrap_or_else(|| "Claude Code".to_string())
+            .provider_by_id(&self.new_session_provider_id)
+            .map(|provider| provider.name)
+            .unwrap_or_else(|| "Anthropic".to_string())
     }
 
-    pub fn cycle_new_session_agent(&mut self, cx: &mut Context<Self>) {
-        let agents = self.bridge.agents();
-        if agents.is_empty() {
+    pub fn cycle_new_session_provider(&mut self, cx: &mut Context<Self>) {
+        let providers = self.bridge.providers();
+        if providers.is_empty() {
             return;
         }
-        let current_ix = agents
+        let current_ix = providers
             .iter()
-            .position(|agent| agent.id == self.new_session_agent_id)
+            .position(|provider| provider.id == self.new_session_provider_id)
             .unwrap_or(0);
-        let next_ix = (current_ix + 1) % agents.len();
-        self.new_session_agent_id = agents[next_ix].id.clone();
+        let next_ix = (current_ix + 1) % providers.len();
+        self.new_session_provider_id = providers[next_ix].id.clone();
         cx.notify();
     }
 
-    pub fn cycle_session_agent(&mut self, id: SessionId, cx: &mut Context<Self>) {
-        let agents = self.bridge.agents();
+    pub fn cycle_session_provider(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        let providers = self.bridge.providers();
         let Some(session) = self.sessions.session_mut(id) else {
             return;
         };
-        if agents.is_empty() {
+        if providers.is_empty() {
             return;
         }
-        let current_ix = agents
+        let current_ix = providers
             .iter()
-            .position(|agent| agent.id == session.agent.id)
+            .position(|provider| provider.id == session.provider.id)
             .unwrap_or(0);
-        let next_ix = (current_ix + 1) % agents.len();
-        session.agent = agents[next_ix].clone();
+        let next_ix = (current_ix + 1) % providers.len();
+        session.provider = providers[next_ix].clone();
         self.persist_session(id);
         cx.notify();
     }
@@ -275,22 +276,22 @@ impl AuiApp {
         }
         self.conversation_scroll.scroll_to_bottom();
 
-        self.sessions.set_status(active_id, AgentStatus::Thinking);
+        self.sessions.set_status(active_id, SessionStatus::Thinking);
         self.persist_session(active_id);
         cx.notify();
 
-        let agent = self
+        let provider = self
             .sessions
             .session(active_id)
-            .map(|session| session.agent.clone())
-            .unwrap_or_else(|| select_agent(&self.bridge, AgentKind::Claude));
+            .map(|session| session.provider.clone())
+            .unwrap_or_else(|| select_provider(&self.bridge, ProviderKind::Anthropic));
         logger::debug(&format!(
-            "bridge send session={} agent={}",
+            "bridge send session={} provider={}",
             active_id.value(),
-            agent.id.as_str()
+            provider.id.as_str()
         ));
         let attachments = std::mem::take(&mut self.attachments);
-        let stream = self.bridge.connect(&agent).send(UserMessage {
+        let stream = self.bridge.connect(&provider).send(UserMessage {
             text: user_text,
             attachments,
             context: Some(WorkingContext {
@@ -304,7 +305,8 @@ impl AuiApp {
             let mut done = false;
             while !done {
                 while let Ok(event) = events.try_recv() {
-                    let is_terminal = matches!(event, StreamEvent::Done | StreamEvent::Error(_));
+                    let is_terminal =
+                        matches!(event, ProviderEvent::Done | ProviderEvent::Error(_));
                     let _ = handle.update(cx, |view, cx| {
                         view.apply_stream_event(active_id, event);
                         cx.notify();
@@ -340,9 +342,9 @@ impl AuiApp {
         self.export_active_session(window, cx);
     }
 
-    fn apply_stream_event(&mut self, id: SessionId, event: StreamEvent) {
+    fn apply_stream_event(&mut self, id: SessionId, event: ProviderEvent) {
         match event {
-            StreamEvent::TextDelta(delta) => {
+            ProviderEvent::TextDelta(delta) => {
                 logger::debug(&format!(
                     "stream delta session={} len={}",
                     id.value(),
@@ -358,7 +360,7 @@ impl AuiApp {
                 self.persist_session(id);
                 self.conversation_scroll.scroll_to_bottom();
             }
-            StreamEvent::ToolStart { name, input } => {
+            ProviderEvent::ToolStart { name, input } => {
                 logger::debug(&format!(
                     "stream tool start session={} tool={} len={}",
                     id.value(),
@@ -371,11 +373,11 @@ impl AuiApp {
                     format!("Tool start: {name}\n{input}"),
                 );
                 self.sessions
-                    .set_status(id, AgentStatus::Executing { tool: name });
+                    .set_status(id, SessionStatus::Executing { tool: name });
                 self.persist_session(id);
                 self.conversation_scroll.scroll_to_bottom();
             }
-            StreamEvent::ToolResult { name, output } => {
+            ProviderEvent::ToolResult { name, output } => {
                 logger::debug(&format!(
                     "stream tool result session={} tool={} len={}",
                     id.value(),
@@ -387,11 +389,11 @@ impl AuiApp {
                     SessionRole::Tool,
                     format!("Tool result: {name}\n{output}"),
                 );
-                self.sessions.set_status(id, AgentStatus::Thinking);
+                self.sessions.set_status(id, SessionStatus::Thinking);
                 self.persist_session(id);
                 self.conversation_scroll.scroll_to_bottom();
             }
-            StreamEvent::TokenUsage { input, output } => {
+            ProviderEvent::TokenUsage { input, output } => {
                 logger::debug(&format!(
                     "stream token usage session={} in={} out={}",
                     id.value(),
@@ -401,20 +403,20 @@ impl AuiApp {
                 let kind = self
                     .sessions
                     .session(id)
-                    .map(|session| session.agent.kind)
-                    .unwrap_or(AgentKind::Claude);
+                    .map(|session| session.provider.kind)
+                    .unwrap_or(ProviderKind::Anthropic);
                 let cost = estimate_cost_usd(kind, input, output);
                 self.sessions.bump_usage(id, input, output, cost);
                 self.persist_session(id);
             }
-            StreamEvent::Done => {
+            ProviderEvent::Done => {
                 logger::debug(&format!("stream done session={}", id.value()));
                 self.stream_targets.remove(&id);
-                self.sessions.set_status(id, AgentStatus::Idle);
+                self.sessions.set_status(id, SessionStatus::Idle);
                 self.persist_session(id);
                 self.conversation_scroll.scroll_to_bottom();
             }
-            StreamEvent::Error(message) => {
+            ProviderEvent::Error(message) => {
                 logger::warn(&format!(
                     "stream error session={} message={}",
                     id.value(),
@@ -424,7 +426,7 @@ impl AuiApp {
                 let user_message = friendly_error_message(&message);
                 self.sessions.set_status(
                     id,
-                    AgentStatus::Error {
+                    SessionStatus::Error {
                         message: user_message.clone(),
                     },
                 );
@@ -605,8 +607,8 @@ fn export_session_markdown(session: &Session) -> String {
     out.push_str("# ");
     out.push_str(&session.title);
     out.push_str("\n\n");
-    out.push_str("- Agent: ");
-    out.push_str(&session.agent.name);
+    out.push_str("- Provider: ");
+    out.push_str(&session.provider.name);
     out.push('\n');
     out.push_str("- Exported: ");
     out.push_str(&format_system_time(std::time::SystemTime::now()));
@@ -645,7 +647,7 @@ fn write_text_file(path: &Path, contents: &str) -> Result<(), String> {
     fs::write(path, contents).map_err(|err| err.to_string())
 }
 
-fn estimate_cost_usd(kind: AgentKind, input_tokens: u32, output_tokens: u32) -> f32 {
+fn estimate_cost_usd(kind: ProviderKind, input_tokens: u32, output_tokens: u32) -> f32 {
     let (in_rate, out_rate) = cost_rates_for(kind);
     if in_rate <= 0.0 && out_rate <= 0.0 {
         return 0.0;
@@ -655,19 +657,19 @@ fn estimate_cost_usd(kind: AgentKind, input_tokens: u32, output_tokens: u32) -> 
     input_cost + output_cost
 }
 
-fn cost_rates_for(kind: AgentKind) -> (f32, f32) {
+fn cost_rates_for(kind: ProviderKind) -> (f32, f32) {
     let (default_in, default_out) = match kind {
-        AgentKind::Claude => (0.0, 0.0),
-        AgentKind::Codex => (0.0, 0.0),
-        AgentKind::Gemini => (0.0, 0.0),
-        AgentKind::OpenCode => (0.0, 0.0),
+        ProviderKind::Anthropic => (0.0, 0.0),
+        ProviderKind::OpenAI => (0.0, 0.0),
+        ProviderKind::Google => (0.0, 0.0),
+        ProviderKind::OpenCode => (0.0, 0.0),
     };
 
     let prefix = match kind {
-        AgentKind::Claude => "AUI_CLAUDE",
-        AgentKind::Codex => "AUI_CODEX",
-        AgentKind::Gemini => "AUI_GEMINI",
-        AgentKind::OpenCode => "AUI_OPENCODE",
+        ProviderKind::Anthropic => "AUI_CLAUDE",
+        ProviderKind::OpenAI => "AUI_CODEX",
+        ProviderKind::Google => "AUI_GEMINI",
+        ProviderKind::OpenCode => "AUI_OPENCODE",
     };
 
     let in_key = format!("{prefix}_COST_IN_PER_MILLION");
@@ -716,7 +718,7 @@ impl Render for AuiApp {
 
         let active_session = self.sessions.active();
         let error_banner = active_session.and_then(|session| match &session.status {
-            AgentStatus::Error { message } => Some(
+            SessionStatus::Error { message } => Some(
                 div()
                     .flex()
                     .items_center()
@@ -807,7 +809,7 @@ impl Render for AuiApp {
                                 .child(
                                     div().text_sm().text_color(rgb(0x5b6777)).child(
                                         active_session
-                                            .map(|session| session.agent.name.clone())
+                                            .map(|session| session.provider.name.clone())
                                             .unwrap_or_else(|| "Select a session".to_string()),
                                     ),
                                 ),
@@ -850,18 +852,18 @@ fn restore_sessions(
 
     for stored in stored_sessions {
         logger::debug(&format!(
-            "restoring session id={} title={} agent={} messages={}",
+            "restoring session id={} title={} provider={} messages={}",
             stored.id.value(),
             stored.title.as_str(),
-            stored.agent_id.as_str(),
+            stored.provider_id.as_str(),
             stored.messages.len()
         ));
-        let agent = resolve_stored_agent(bridge, &stored);
+        let provider = resolve_stored_provider(bridge, &stored);
         let session = crate::session::Session {
             id: stored.id,
             title: stored.title,
-            agent,
-            status: AgentStatus::Idle,
+            provider,
+            status: SessionStatus::Idle,
             stats: crate::session::SessionStats::new(),
             messages: stored.messages,
         };
@@ -869,23 +871,23 @@ fn restore_sessions(
     }
 }
 
-fn select_agent(bridge: &BridgeClient, kind: AgentKind) -> AgentInfo {
+fn select_provider(bridge: &BridgeClient, kind: ProviderKind) -> ProviderInfo {
     bridge
-        .agents()
+        .providers()
         .iter()
-        .find(|agent| agent.kind == kind)
+        .find(|provider| provider.kind == kind)
         .cloned()
-        .unwrap_or_else(|| AgentInfo::new("claude-code", "Claude Code", AgentKind::Claude))
+        .unwrap_or_else(|| ProviderInfo::new("claude-code", "Anthropic", ProviderKind::Anthropic))
 }
 
-fn resolve_stored_agent(bridge: &BridgeClient, stored: &StoredSession) -> AgentInfo {
-    if let Some(agent) = bridge.agent_by_id(&stored.agent_id) {
-        return agent;
+fn resolve_stored_provider(bridge: &BridgeClient, stored: &StoredSession) -> ProviderInfo {
+    if let Some(provider) = bridge.provider_by_id(&stored.provider_id) {
+        return provider;
     }
-    AgentInfo::new(
-        stored.agent_id.clone(),
-        stored.agent_name.clone(),
-        AgentKind::Claude,
+    ProviderInfo::new(
+        stored.provider_id.clone(),
+        stored.provider_name.clone(),
+        ProviderKind::Anthropic,
     )
 }
 

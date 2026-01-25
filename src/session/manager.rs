@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::agent::{AgentInfo, AgentStatus};
+use crate::agent::{ProviderInfo, SessionStatus};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(u64);
@@ -75,8 +75,8 @@ impl SessionStats {
 pub struct Session {
     pub id: SessionId,
     pub title: String,
-    pub agent: AgentInfo,
-    pub status: AgentStatus,
+    pub provider: ProviderInfo,
+    pub status: SessionStatus,
     pub stats: SessionStats,
     pub messages: Vec<SessionMessage>,
 }
@@ -84,11 +84,11 @@ pub struct Session {
 impl Session {
     pub const fn status_label(&self) -> &'static str {
         match self.status {
-            AgentStatus::Idle => "Idle",
-            AgentStatus::Thinking => "Thinking",
-            AgentStatus::Executing { .. } => "Executing",
-            AgentStatus::WaitingInput { .. } => "Waiting",
-            AgentStatus::Error { .. } => "Error",
+            SessionStatus::Idle => "Idle",
+            SessionStatus::Thinking => "Thinking",
+            SessionStatus::Executing { .. } => "Executing",
+            SessionStatus::WaitingInput { .. } => "Waiting",
+            SessionStatus::Error { .. } => "Error",
         }
     }
 }
@@ -140,14 +140,18 @@ impl SessionManager {
         }
     }
 
-    pub fn create_session(&mut self, title: impl Into<String>, agent: AgentInfo) -> SessionId {
+    pub fn create_session(
+        &mut self,
+        title: impl Into<String>,
+        provider: ProviderInfo,
+    ) -> SessionId {
         let id = SessionId::new(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         let session = Session {
             id,
             title: title.into(),
-            agent,
-            status: AgentStatus::Idle,
+            provider,
+            status: SessionStatus::Idle,
             stats: SessionStats::new(),
             messages: Vec::new(),
         };
@@ -175,7 +179,7 @@ impl SessionManager {
         let _ = self.push_message(id, role, content);
     }
 
-    pub fn set_status(&mut self, id: SessionId, status: AgentStatus) {
+    pub fn set_status(&mut self, id: SessionId, status: SessionStatus) {
         if let Some(session) = self.sessions.iter_mut().find(|session| session.id == id) {
             session.status = status;
         }
@@ -220,16 +224,16 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentInfo, AgentKind};
+    use crate::agent::{ProviderInfo, ProviderKind};
 
-    fn sample_agent() -> AgentInfo {
-        AgentInfo::new("test", "Test Agent", AgentKind::Claude)
+    fn sample_provider() -> ProviderInfo {
+        ProviderInfo::new("test", "Test Provider", ProviderKind::Anthropic)
     }
 
     #[test]
     fn create_session_sets_active() {
         let mut manager = SessionManager::new();
-        let id = manager.create_session("alpha", sample_agent());
+        let id = manager.create_session("alpha", sample_provider());
         assert_eq!(manager.active_id(), Some(id));
         assert_eq!(manager.sessions().len(), 1);
     }
@@ -237,7 +241,7 @@ mod tests {
     #[test]
     fn push_message_returns_index() {
         let mut manager = SessionManager::new();
-        let id = manager.create_session("alpha", sample_agent());
+        let id = manager.create_session("alpha", sample_provider());
         let index = manager.push_message(id, SessionRole::User, "hello".to_string());
         assert_eq!(index, Some(0));
         let session = manager.session(id).expect("session missing");
@@ -248,7 +252,7 @@ mod tests {
     #[test]
     fn bump_usage_saturates_tokens() {
         let mut manager = SessionManager::new();
-        let id = manager.create_session("alpha", sample_agent());
+        let id = manager.create_session("alpha", sample_provider());
         manager.bump_usage(id, u32::MAX - 1, u32::MAX - 2, 0.0);
         manager.bump_usage(id, 10, 20, 1.5);
         let session = manager.session(id).expect("session missing");
@@ -260,8 +264,8 @@ mod tests {
     #[test]
     fn remove_session_updates_active() {
         let mut manager = SessionManager::new();
-        let first = manager.create_session("alpha", sample_agent());
-        let second = manager.create_session("beta", sample_agent());
+        let first = manager.create_session("alpha", sample_provider());
+        let second = manager.create_session("beta", sample_provider());
         assert_eq!(manager.active_id(), Some(second));
         assert!(manager.remove_session(second));
         assert_eq!(manager.active_id(), Some(first));
