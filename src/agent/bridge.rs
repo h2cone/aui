@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -109,11 +110,12 @@ fn send_openai_stream(
         model,
     } = openai_config(info)?;
     let client = build_http_client()?;
+    let prompt = build_prompt(message)?;
     let request_body = serde_json::json!({
         "model": model,
         "stream": true,
         "stream_options": { "include_usage": true },
-        "messages": [{ "role": "user", "content": message.text.as_str() }],
+        "messages": [{ "role": "user", "content": prompt }],
     });
     let url = format!("{}/chat/completions", base_url);
     let response = client
@@ -239,7 +241,7 @@ fn send_claude_stream(
         "model": model,
         "max_tokens": max_tokens,
         "stream": true,
-        "messages": [{ "role": "user", "content": message.text.as_str() }],
+        "messages": [{ "role": "user", "content": build_prompt(message)? }],
     });
     let client = build_http_client()?;
     let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
@@ -344,6 +346,7 @@ fn send_gemini_request(
         .ok()
         .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string());
     let api_version = env::var("AUI_GEMINI_API_VERSION").unwrap_or_else(|_| "v1beta".into());
+    let prompt = build_prompt(message)?;
 
     let url = format!(
         "{}/{}/models/{}:generateContent?key={}",
@@ -353,7 +356,7 @@ fn send_gemini_request(
         api_key
     );
     let request_body = serde_json::json!({
-        "contents": [{ "role": "user", "parts": [{ "text": message.text.as_str() }] }]
+        "contents": [{ "role": "user", "parts": [{ "text": prompt }] }]
     });
     let client = build_http_client()?;
     let response = client
@@ -562,4 +565,95 @@ fn parse_u32_env(key: &str, fallback: u32) -> u32 {
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(fallback)
+}
+
+fn build_prompt(message: &UserMessage) -> Result<String, String> {
+    const MAX_BYTES: u64 = 200_000;
+
+    let mut out = String::new();
+    if let Some(context) = message.context.as_ref() {
+        if let Some(cwd) = context.cwd.as_ref() {
+            out.push_str("Working directory: ");
+            out.push_str(&cwd.display().to_string());
+            out.push_str("\n\n");
+        }
+    }
+
+    out.push_str(message.text.as_str());
+
+    if message.attachments.is_empty() {
+        return Ok(out);
+    }
+
+    out.push_str("\n\n---\nAttachments:\n");
+
+    for attachment in &message.attachments {
+        out.push_str("- ");
+        out.push_str(&attachment.name);
+        if let Some(path) = attachment.path.as_ref() {
+            out.push_str(" (");
+            out.push_str(&path.display().to_string());
+            out.push_str(")\n");
+
+            let meta = std::fs::metadata(path).map_err(|err| {
+                format!("Attachment metadata failed for {}: {err}", path.display())
+            })?;
+            let size = meta.len();
+            if size > MAX_BYTES {
+                out.push_str("  [skipped: too large]\n");
+                continue;
+            }
+
+            let bytes = std::fs::read(path)
+                .map_err(|err| format!("Attachment read failed for {}: {err}", path.display()))?;
+            if bytes.is_empty() {
+                out.push_str("  [empty file]\n");
+                continue;
+            }
+
+            let language = fence_language_for_path(path);
+            let content = match std::str::from_utf8(&bytes) {
+                Ok(text) => text,
+                Err(_) => {
+                    out.push_str("  [binary file omitted]\n");
+                    continue;
+                }
+            };
+
+            out.push_str("```");
+            out.push_str(language);
+            out.push_str("\n");
+            out.push_str(content);
+            if !content.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n");
+        } else {
+            out.push('\n');
+        }
+    }
+
+    Ok(out)
+}
+
+fn fence_language_for_path(path: &Path) -> &'static str {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return "text";
+    };
+    match ext.to_ascii_lowercase().as_str() {
+        "rs" => "rust",
+        "ts" => "typescript",
+        "tsx" => "tsx",
+        "js" => "javascript",
+        "jsx" => "jsx",
+        "py" => "python",
+        "go" => "go",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "json" => "json",
+        "md" => "markdown",
+        "diff" => "diff",
+        "sh" => "sh",
+        _ => "text",
+    }
 }

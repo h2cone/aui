@@ -1,28 +1,78 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui::{
-    Context, Entity, FontWeight, ScrollHandle, Window, div, hsla, linear_color_stop,
-    linear_gradient, prelude::*, px, rgb,
+    Context, Entity, FontWeight, PathPromptOptions, ScrollHandle, Window, div, hsla,
+    linear_color_stop, linear_gradient, prelude::*, px, rgb,
 };
 
-use crate::actions::Submit;
+use crate::actions::{AttachFiles, ClearAttachments, ExportSession, Submit};
 use crate::agent::bridge::BridgeClient;
-use crate::agent::{AgentInfo, AgentKind, AgentStatus, Attachment, StreamEvent, UserMessage};
+use crate::agent::{
+    AgentInfo, AgentKind, AgentStatus, Attachment, StreamEvent, UserMessage, WorkingContext,
+};
+use crate::config;
 use crate::logger;
-use crate::session::{SessionId, SessionManager, SessionRole, SessionStorage, StoredSession};
+use crate::session::{
+    Session, SessionId, SessionManager, SessionRole, SessionStorage, StoredDiffDecision,
+    StoredSession,
+};
 use crate::text_input::TextInput;
-use crate::ui::{conversation, input_box, sidebar, status_bar};
+use crate::ui::{conversation, input_box, sidebar};
 
 pub struct AuiApp {
     pub text_input: Entity<TextInput>,
     sessions: SessionManager,
     bridge: BridgeClient,
     attachments: Vec<Attachment>,
-    status_note: String,
+    new_session_agent_id: String,
     storage: SessionStorage,
     stream_targets: HashMap<SessionId, usize>,
+    diff_decisions: HashMap<DiffKey, DiffDecision>,
+    shell_collapsed: HashMap<ShellKey, bool>,
     conversation_scroll: ScrollHandle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DiffKey {
+    session_id: SessionId,
+    message_index: usize,
+    block_index: usize,
+}
+
+impl DiffKey {
+    pub const fn new(session_id: SessionId, message_index: usize, block_index: usize) -> Self {
+        Self {
+            session_id,
+            message_index,
+            block_index,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffDecision {
+    Accepted,
+    Rejected,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ShellKey {
+    session_id: SessionId,
+    message_index: usize,
+    block_index: usize,
+}
+
+impl ShellKey {
+    pub const fn new(session_id: SessionId, message_index: usize, block_index: usize) -> Self {
+        Self {
+            session_id,
+            message_index,
+            block_index,
+        }
+    }
 }
 
 impl AuiApp {
@@ -30,14 +80,14 @@ impl AuiApp {
         logger::info("app init");
         let text_input = cx.new(|cx| TextInput::new(cx));
         let bridge = BridgeClient::new();
+        let config = config::Config::load();
         let storage = SessionStorage::new();
         let mut sessions = SessionManager::new();
         let conversation_scroll = ScrollHandle::new();
         logger::debug("restoring sessions");
         restore_sessions(&bridge, &storage, &mut sessions);
         if sessions.sessions().is_empty() {
-            logger::debug("no sessions restored, seeding defaults");
-            seed_sessions(&bridge, &mut sessions);
+            logger::debug("no sessions restored");
         }
         if sessions.active_id().is_none() {
             if let Some(first) = sessions.sessions().first() {
@@ -56,14 +106,38 @@ impl AuiApp {
                 .unwrap_or_else(|| "none".to_string())
         ));
 
+        let mut diff_decisions = HashMap::new();
+        for session in sessions.sessions() {
+            if let Ok(decisions) = storage.load_diff_decisions(session.id) {
+                for decision in decisions {
+                    let value = if decision.accepted {
+                        DiffDecision::Accepted
+                    } else {
+                        DiffDecision::Rejected
+                    };
+                    diff_decisions.insert(
+                        DiffKey::new(session.id, decision.message_index, decision.block_index),
+                        value,
+                    );
+                }
+            }
+        }
+
+        let new_session_agent_id = bridge
+            .agent_by_id(&config.default_agent_id)
+            .map(|agent| agent.id)
+            .unwrap_or_else(|| "claude-code".to_string());
+
         Self {
             text_input,
             sessions,
             bridge,
             attachments: Vec::new(),
-            status_note: "Ready".to_string(),
+            new_session_agent_id,
             storage,
             stream_targets: HashMap::new(),
+            diff_decisions,
+            shell_collapsed: HashMap::new(),
             conversation_scroll,
         }
     }
@@ -79,7 +153,6 @@ impl AuiApp {
     pub fn select_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
         logger::debug(&format!("session select id={}", id.value()));
         self.sessions.set_active(id);
-        self.status_note = "Session focus updated".to_string();
         self.conversation_scroll.scroll_to_bottom();
         cx.notify();
     }
@@ -87,7 +160,10 @@ impl AuiApp {
     pub fn new_session(&mut self, cx: &mut Context<Self>) {
         let next = self.sessions.sessions().len() + 1;
         let title = format!("session-{}", next);
-        let agent = select_agent(&self.bridge, AgentKind::Claude);
+        let agent = self
+            .bridge
+            .agent_by_id(&self.new_session_agent_id)
+            .unwrap_or_else(|| select_agent(&self.bridge, AgentKind::Claude));
         let id = self.sessions.create_session(title, agent);
         logger::debug(&format!(
             "session created id={} agent={}",
@@ -99,9 +175,47 @@ impl AuiApp {
         ));
         self.sessions
             .append_message(id, SessionRole::Assistant, "New session ready.".to_string());
-        self.status_note = "New session created".to_string();
         self.persist_session(id);
         self.conversation_scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
+    pub fn new_session_agent_label(&self) -> String {
+        self.bridge
+            .agent_by_id(&self.new_session_agent_id)
+            .map(|agent| agent.name)
+            .unwrap_or_else(|| "Claude Code".to_string())
+    }
+
+    pub fn cycle_new_session_agent(&mut self, cx: &mut Context<Self>) {
+        let agents = self.bridge.agents();
+        if agents.is_empty() {
+            return;
+        }
+        let current_ix = agents
+            .iter()
+            .position(|agent| agent.id == self.new_session_agent_id)
+            .unwrap_or(0);
+        let next_ix = (current_ix + 1) % agents.len();
+        self.new_session_agent_id = agents[next_ix].id.clone();
+        cx.notify();
+    }
+
+    pub fn cycle_session_agent(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        let agents = self.bridge.agents();
+        let Some(session) = self.sessions.session_mut(id) else {
+            return;
+        };
+        if agents.is_empty() {
+            return;
+        }
+        let current_ix = agents
+            .iter()
+            .position(|agent| agent.id == session.agent.id)
+            .unwrap_or(0);
+        let next_ix = (current_ix + 1) % agents.len();
+        session.agent = agents[next_ix].clone();
+        self.persist_session(id);
         cx.notify();
     }
 
@@ -110,17 +224,14 @@ impl AuiApp {
             return;
         }
         self.stream_targets.remove(&id);
+        self.diff_decisions.retain(|key, _| key.session_id != id);
+        self.shell_collapsed.retain(|key, _| key.session_id != id);
         if let Err(err) = self.storage.delete_session(id) {
             logger::warn(&format!(
                 "session delete failed id={} error={}",
                 id.value(),
                 err
             ));
-        }
-        if self.sessions.sessions().is_empty() {
-            self.status_note = "No sessions remaining".to_string();
-        } else {
-            self.status_note = "Session deleted".to_string();
         }
         cx.notify();
     }
@@ -135,14 +246,12 @@ impl AuiApp {
         });
 
         let Some(message) = message else {
-            self.status_note = "Type a message before sending".to_string();
             logger::debug("submit ignored: empty input");
             cx.notify();
             return;
         };
 
         let Some(active_id) = self.sessions.active_id() else {
-            self.status_note = "Create a session first".to_string();
             logger::debug("submit ignored: no active session");
             cx.notify();
             return;
@@ -167,7 +276,6 @@ impl AuiApp {
         self.conversation_scroll.scroll_to_bottom();
 
         self.sessions.set_status(active_id, AgentStatus::Thinking);
-        self.status_note = "Delivering to agent".to_string();
         self.persist_session(active_id);
         cx.notify();
 
@@ -181,10 +289,13 @@ impl AuiApp {
             active_id.value(),
             agent.id.as_str()
         ));
+        let attachments = std::mem::take(&mut self.attachments);
         let stream = self.bridge.connect(&agent).send(UserMessage {
             text: user_text,
-            attachments: self.attachments.clone(),
-            context: None,
+            attachments,
+            context: Some(WorkingContext {
+                cwd: std::env::current_dir().ok(),
+            }),
         });
 
         let handle = cx.entity().downgrade();
@@ -210,6 +321,23 @@ impl AuiApp {
             }
         })
         .detach();
+    }
+
+    fn attach_files(&mut self, _: &AttachFiles, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_attachment_picker(window, cx);
+    }
+
+    fn clear_attachments_action(
+        &mut self,
+        _: &ClearAttachments,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_attachments(cx);
+    }
+
+    fn export_session(&mut self, _: &ExportSession, window: &mut Window, cx: &mut Context<Self>) {
+        self.export_active_session(window, cx);
     }
 
     fn apply_stream_event(&mut self, id: SessionId, event: StreamEvent) {
@@ -270,14 +398,19 @@ impl AuiApp {
                     input,
                     output
                 ));
-                self.sessions.bump_usage(id, input, output, 0.0);
+                let kind = self
+                    .sessions
+                    .session(id)
+                    .map(|session| session.agent.kind)
+                    .unwrap_or(AgentKind::Claude);
+                let cost = estimate_cost_usd(kind, input, output);
+                self.sessions.bump_usage(id, input, output, cost);
                 self.persist_session(id);
             }
             StreamEvent::Done => {
                 logger::debug(&format!("stream done session={}", id.value()));
                 self.stream_targets.remove(&id);
                 self.sessions.set_status(id, AgentStatus::Idle);
-                self.status_note = "Idle".to_string();
                 self.persist_session(id);
                 self.conversation_scroll.scroll_to_bottom();
             }
@@ -295,7 +428,6 @@ impl AuiApp {
                         message: user_message.clone(),
                     },
                 );
-                self.status_note = user_message;
                 self.persist_session(id);
                 self.conversation_scroll.scroll_to_bottom();
             }
@@ -313,6 +445,248 @@ impl AuiApp {
             }
         }
     }
+
+    pub fn diff_decision(&self, key: DiffKey) -> Option<DiffDecision> {
+        self.diff_decisions.get(&key).copied()
+    }
+
+    pub fn set_diff_decision(
+        &mut self,
+        key: DiffKey,
+        decision: DiffDecision,
+        cx: &mut Context<Self>,
+    ) {
+        self.diff_decisions.insert(key, decision);
+        self.persist_diff_decisions(key.session_id);
+        cx.notify();
+    }
+
+    fn persist_diff_decisions(&self, session_id: SessionId) {
+        let mut decisions = Vec::new();
+        for (key, decision) in self.diff_decisions.iter() {
+            if key.session_id != session_id {
+                continue;
+            }
+            decisions.push(StoredDiffDecision {
+                message_index: key.message_index,
+                block_index: key.block_index,
+                accepted: matches!(decision, DiffDecision::Accepted),
+            });
+        }
+        decisions.sort_by_key(|decision| (decision.message_index, decision.block_index));
+        if let Err(err) = self.storage.save_diff_decisions(session_id, &decisions) {
+            logger::warn(&format!(
+                "diff decision save failed session={} error={}",
+                session_id.value(),
+                err
+            ));
+        }
+    }
+
+    pub fn shell_collapsed(&self, key: ShellKey) -> Option<bool> {
+        self.shell_collapsed.get(&key).copied()
+    }
+
+    pub fn toggle_shell(&mut self, key: ShellKey, cx: &mut Context<Self>) {
+        let next = !self.shell_collapsed.get(&key).copied().unwrap_or(false);
+        self.shell_collapsed.insert(key, next);
+        cx.notify();
+    }
+
+    pub fn add_attachments(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+            if self
+                .attachments
+                .iter()
+                .any(|existing| existing.path.as_ref() == Some(path))
+            {
+                continue;
+            }
+            self.attachments.push(Attachment {
+                name,
+                path: Some(path.clone()),
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn clear_attachments(&mut self, cx: &mut Context<Self>) {
+        if self.attachments.is_empty() {
+            return;
+        }
+        self.attachments.clear();
+        cx.notify();
+    }
+
+    pub fn open_attachment_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = cx.entity().downgrade();
+        window.defer(cx, move |_, app| {
+            let async_app = app.to_async();
+            let rx = app.prompt_for_paths(PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: true,
+                prompt: Some("Select attachments".into()),
+            });
+
+            let task = app.foreground_executor().spawn(async move {
+                let result = rx.await;
+                let mut cx = async_app.clone();
+                match result {
+                    Ok(Ok(Some(paths))) => {
+                        let _ = handle.update(&mut cx, |view, cx| {
+                            view.add_attachments(&paths, cx);
+                        });
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(_)) | Err(_) => {}
+                }
+            });
+            task.detach();
+        });
+    }
+
+    pub fn export_active_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.active().cloned() else {
+            cx.notify();
+            return;
+        };
+        let handle = cx.entity().downgrade();
+        let suggested = format!("{}.md", sanitize_filename(&session.title));
+        let dir = config::data_dir();
+        window.defer(cx, move |_, app| {
+            let async_app = app.to_async();
+            let rx = app.prompt_for_new_path(&dir, Some(&suggested));
+            let task = app.foreground_executor().spawn(async move {
+                let result = rx.await;
+                let mut cx = async_app.clone();
+                let path = match result {
+                    Ok(Ok(Some(path))) => path,
+                    Ok(Ok(None)) => return,
+                    Ok(Err(_)) | Err(_) => return,
+                };
+
+                let markdown = export_session_markdown(&session);
+                let write_result = write_text_file(&path, &markdown);
+                if write_result.is_ok() {
+                    let _ = handle.update(&mut cx, |_, cx| {
+                        cx.notify();
+                    });
+                }
+            });
+            task.detach();
+        });
+    }
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let mut cleaned = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ' ') {
+            cleaned.push(ch);
+        } else {
+            cleaned.push('-');
+        }
+    }
+    let cleaned = cleaned.trim().trim_matches('.');
+    if cleaned.is_empty() {
+        "session".to_string()
+    } else {
+        cleaned.replace(' ', "-")
+    }
+}
+
+fn export_session_markdown(session: &Session) -> String {
+    let mut out = String::new();
+    out.push_str("# ");
+    out.push_str(&session.title);
+    out.push_str("\n\n");
+    out.push_str("- Agent: ");
+    out.push_str(&session.agent.name);
+    out.push('\n');
+    out.push_str("- Exported: ");
+    out.push_str(&format_system_time(std::time::SystemTime::now()));
+    out.push_str("\n\n---\n\n");
+
+    for message in &session.messages {
+        out.push_str("## ");
+        out.push_str(match message.role {
+            SessionRole::User => "User",
+            SessionRole::Assistant => "Assistant",
+            SessionRole::Tool => "Tool",
+        });
+        out.push('\n');
+        out.push_str("_");
+        out.push_str(&format_system_time(message.timestamp));
+        out.push_str("_\n\n");
+        out.push_str(&message.content);
+        out.push_str("\n\n");
+    }
+
+    out
+}
+
+fn format_system_time(time: std::time::SystemTime) -> String {
+    let seconds = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    seconds.to_string()
+}
+
+fn write_text_file(path: &Path, contents: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    fs::write(path, contents).map_err(|err| err.to_string())
+}
+
+fn estimate_cost_usd(kind: AgentKind, input_tokens: u32, output_tokens: u32) -> f32 {
+    let (in_rate, out_rate) = cost_rates_for(kind);
+    if in_rate <= 0.0 && out_rate <= 0.0 {
+        return 0.0;
+    }
+    let input_cost = (input_tokens as f32 / 1_000_000.0) * in_rate;
+    let output_cost = (output_tokens as f32 / 1_000_000.0) * out_rate;
+    input_cost + output_cost
+}
+
+fn cost_rates_for(kind: AgentKind) -> (f32, f32) {
+    let (default_in, default_out) = match kind {
+        AgentKind::Claude => (0.0, 0.0),
+        AgentKind::Codex => (0.0, 0.0),
+        AgentKind::Gemini => (0.0, 0.0),
+        AgentKind::OpenCode => (0.0, 0.0),
+    };
+
+    let prefix = match kind {
+        AgentKind::Claude => "AUI_CLAUDE",
+        AgentKind::Codex => "AUI_CODEX",
+        AgentKind::Gemini => "AUI_GEMINI",
+        AgentKind::OpenCode => "AUI_OPENCODE",
+    };
+
+    let in_key = format!("{prefix}_COST_IN_PER_MILLION");
+    let out_key = format!("{prefix}_COST_OUT_PER_MILLION");
+    let global_in = "AUI_COST_IN_PER_MILLION";
+    let global_out = "AUI_COST_OUT_PER_MILLION";
+
+    (
+        read_env_f32(&in_key)
+            .or_else(|| read_env_f32(global_in))
+            .unwrap_or(default_in),
+        read_env_f32(&out_key)
+            .or_else(|| read_env_f32(global_out))
+            .unwrap_or(default_out),
+    )
+}
+
+fn read_env_f32(key: &str) -> Option<f32> {
+    std::env::var(key).ok()?.trim().parse::<f32>().ok()
 }
 
 impl Render for AuiApp {
@@ -326,7 +700,7 @@ impl Render for AuiApp {
         let sidebar_width = px(sidebar_width_f32);
         let main_width =
             px((viewport_w - sidebar_width_f32 - outer_padding_f32 * 2.0).clamp(520.0, 980.0));
-        let conversation_height = px((viewport_h - 340.0).clamp(220.0, 520.0));
+        let panel_height = px((viewport_h - outer_padding_f32 * 2.0).max(0.0));
 
         let background = linear_gradient(
             135.0,
@@ -341,13 +715,25 @@ impl Render for AuiApp {
         );
 
         let active_session = self.sessions.active();
-        let status = active_session
-            .map(|session| &session.status)
-            .unwrap_or(&AgentStatus::Idle);
-        let fallback_stats = crate::session::SessionStats::new();
-        let stats = active_session
-            .map(|session| &session.stats)
-            .unwrap_or(&fallback_stats);
+        let error_banner = active_session.and_then(|session| match &session.status {
+            AgentStatus::Error { message } => Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(hsla(0.0, 0.7, 0.55, 0.25))
+                    .bg(hsla(0.0, 0.75, 0.96, 0.8))
+                    .px(px(14.))
+                    .py(px(10.))
+                    .text_sm()
+                    .text_color(rgb(0x7a1f1f))
+                    .child(message.clone())
+                    .into_any_element(),
+            ),
+            _ => None,
+        });
 
         div()
             .size_full()
@@ -360,6 +746,7 @@ impl Render for AuiApp {
             .child(
                 div()
                     .w(sidebar_width)
+                    .h(panel_height)
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -376,9 +763,10 @@ impl Render for AuiApp {
                     }])
                     .child(sidebar::render_sidebar(self, cx)),
             )
-            .child(
-                div()
+            .child({
+                let mut main_panel = div()
                     .w(main_width)
+                    .h(panel_height)
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -394,101 +782,57 @@ impl Render for AuiApp {
                         spread_radius: px(-18.),
                     }])
                     .on_action(cx.listener(Self::submit))
+                    .on_action(cx.listener(Self::attach_files))
+                    .on_action(cx.listener(Self::export_session))
+                    .on_action(cx.listener(Self::clear_attachments_action))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_2xl()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(0x0b1220))
-                                            .child(
-                                                active_session
-                                                    .map(|session| {
-                                                        format!("{} conversation", session.title)
-                                                    })
-                                                    .unwrap_or_else(|| "Conversation".to_string()),
-                                            ),
-                                    )
-                                    .child(
-                                        div().text_sm().text_color(rgb(0x5b6777)).child(
+                        div().flex().items_center().justify_start().child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_2xl()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(0x0b1220))
+                                        .child(
                                             active_session
-                                                .map(|session| session.agent.name.clone())
-                                                .unwrap_or_else(|| "Select a session".to_string()),
+                                                .map(|session| {
+                                                    format!("{} conversation", session.title)
+                                                })
+                                                .unwrap_or_else(|| "Conversation".to_string()),
                                         ),
+                                )
+                                .child(
+                                    div().text_sm().text_color(rgb(0x5b6777)).child(
+                                        active_session
+                                            .map(|session| session.agent.name.clone())
+                                            .unwrap_or_else(|| "Select a session".to_string()),
                                     ),
-                            )
-                            .child(
-                                div()
-                                    .px(px(12.))
-                                    .py(px(6.))
-                                    .rounded_full()
-                                    .bg(hsla(0.5, 0.4, 0.92, 0.45))
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(0x0f172a))
-                                    .child("Unified desktop"),
-                            ),
-                    )
+                                ),
+                        ),
+                    );
+
+                if let Some(banner) = error_banner {
+                    main_panel = main_panel.child(banner);
+                }
+
+                main_panel
                     .child(
                         div()
-                            .h(conversation_height)
+                            .flex_1()
                             .flex()
                             .flex_col()
                             .gap_3()
                             .id("conversation-scroll")
                             .overflow_y_scroll()
                             .track_scroll(&self.conversation_scroll)
-                            .child(conversation::render_conversation(active_session)),
+                            .child(conversation::render_conversation(self, active_session, cx)),
                     )
-                    .child(status_bar::render_status_bar(
-                        status,
-                        stats,
-                        self.status_note.clone().into(),
-                    ))
-                    .child(input_box::render_input_box(
-                        &self.text_input,
-                        &self.attachments,
-                    )),
-            )
+                    .child(input_box::render_input_box(&self.text_input, cx))
+            })
     }
-}
-
-fn seed_sessions(bridge: &BridgeClient, sessions: &mut SessionManager) {
-    logger::debug("seeding default sessions");
-    let claude = select_agent(bridge, AgentKind::Claude);
-    let codex = select_agent(bridge, AgentKind::Codex);
-    let gemini = select_agent(bridge, AgentKind::Gemini);
-
-    let first = sessions.create_session("proj-a", claude);
-    sessions.append_message(
-        first,
-        SessionRole::Assistant,
-        "Welcome to AUI. Ask anything about your project.".to_string(),
-    );
-
-    let second = sessions.create_session("debug", codex);
-    sessions.append_message(
-        second,
-        SessionRole::Assistant,
-        "Provide logs or stack traces to start debugging.".to_string(),
-    );
-
-    let third = sessions.create_session("research", gemini);
-    sessions.append_message(
-        third,
-        SessionRole::Assistant,
-        "Summarize requirements or explore design options here.".to_string(),
-    );
-
-    sessions.set_active(first);
 }
 
 fn restore_sessions(

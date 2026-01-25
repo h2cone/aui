@@ -68,8 +68,22 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                                 )
                                 .child(
                                     div()
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .rounded_full()
+                                        .border_1()
+                                        .border_color(hsla(0.0, 0.0, 0.0, 0.08))
+                                        .bg(hsla(0.0, 0.0, 1.0, 0.0))
                                         .text_xs()
                                         .text_color(rgb(0x5b6777))
+                                        .cursor(CursorStyle::PointingHand)
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |view, _, _, cx| {
+                                                cx.stop_propagation();
+                                                view.cycle_session_agent(id, cx);
+                                            }),
+                                        )
                                         .child(session.agent.name.clone()),
                                 ),
                         ),
@@ -148,6 +162,32 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                     cx.listener(|view, _, _, cx| view.new_session(cx)),
                 )
                 .child("+ New"),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_xs()
+                .text_color(rgb(0x5b6777))
+                .child("New session agent:")
+                .child(
+                    div()
+                        .px(px(10.))
+                        .py(px(4.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(hsla(0.0, 0.0, 0.0, 0.1))
+                        .bg(hsla(0.0, 0.0, 1.0, 0.0))
+                        .text_xs()
+                        .text_color(rgb(0x0f172a))
+                        .cursor(CursorStyle::PointingHand)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, cx| view.cycle_new_session_agent(cx)),
+                        )
+                        .child(view.new_session_agent_label()),
+                ),
         )
         .child(
             div()

@@ -2,22 +2,50 @@ use gpui::{
     BoxShadow, FontWeight, IntoElement, SharedString, div, hsla, prelude::*, px, rgb, white,
 };
 
+use crate::app::{AuiApp, DiffKey};
 use crate::session::{Session, SessionRole};
 use crate::ui::widgets::code_block::code_block;
 use crate::ui::widgets::diff_view::diff_view;
 use crate::ui::widgets::markdown::markdown_block;
+use crate::ui::widgets::shell_output::shell_output;
 
-pub fn render_conversation(session: Option<&Session>) -> impl IntoElement {
+pub fn render_conversation(
+    view: &AuiApp,
+    session: Option<&Session>,
+    cx: &mut gpui::Context<AuiApp>,
+) -> impl IntoElement {
     let mut message_items = Vec::new();
 
     if let Some(session) = session {
-        for message in &session.messages {
+        for (message_index, message) in session.messages.iter().enumerate() {
             let (label, bubble_bg, text_color) = style_for_role(&message.role);
-            let blocks = parse_blocks(&message.content);
             let mut body_children = Vec::new();
 
-            for block in blocks {
-                body_children.push(render_block(block));
+            if matches!(message.role, SessionRole::Tool) {
+                let key = crate::app::ShellKey::new(session.id, message_index, 0);
+                let collapsed = view.shell_collapsed(key).unwrap_or(false);
+                body_children.push(
+                    shell_output(
+                        SharedString::from("Shell"),
+                        SharedString::from(message.content.clone()),
+                        key,
+                        collapsed,
+                        cx,
+                    )
+                    .into_any_element(),
+                );
+            } else {
+                let blocks = parse_blocks(&message.content);
+                for (block_index, block) in blocks.into_iter().enumerate() {
+                    body_children.push(render_block(
+                        view,
+                        session.id,
+                        message_index,
+                        block_index,
+                        block,
+                        cx,
+                    ));
+                }
             }
 
             if body_children.is_empty() {
@@ -80,14 +108,43 @@ pub fn render_conversation(session: Option<&Session>) -> impl IntoElement {
     div().flex().flex_col().gap_3().children(message_items)
 }
 
-fn render_block(block: MessageBlock) -> gpui::AnyElement {
+fn render_block(
+    view: &AuiApp,
+    session_id: crate::session::SessionId,
+    message_index: usize,
+    block_index: usize,
+    block: MessageBlock,
+    cx: &mut gpui::Context<AuiApp>,
+) -> gpui::AnyElement {
     match block {
         MessageBlock::Text(text) => markdown_block(SharedString::from(text)).into_any_element(),
         MessageBlock::Code { language, code } => {
-            code_block(SharedString::from(language), SharedString::from(code)).into_any_element()
+            code_block(SharedString::from(language), SharedString::from(code), cx)
+                .into_any_element()
         }
         MessageBlock::Diff { title, diff } => {
-            diff_view(SharedString::from(title), SharedString::from(diff)).into_any_element()
+            let key = DiffKey::new(session_id, message_index, block_index);
+            let decision = view.diff_decision(key);
+            diff_view(
+                SharedString::from(title),
+                SharedString::from(diff),
+                decision,
+                key,
+                cx,
+            )
+            .into_any_element()
+        }
+        MessageBlock::Shell { title, output } => {
+            let key = crate::app::ShellKey::new(session_id, message_index, block_index);
+            let collapsed = view.shell_collapsed(key).unwrap_or(false);
+            shell_output(
+                SharedString::from(title),
+                SharedString::from(output),
+                key,
+                collapsed,
+                cx,
+            )
+            .into_any_element()
         }
     }
 }
@@ -154,6 +211,11 @@ fn flush_code_block(blocks: &mut Vec<MessageBlock>, language: &mut String, buffe
             title: "Diff".to_string(),
             diff: trimmed.to_string(),
         });
+    } else if is_shell_language(&lang) {
+        blocks.push(MessageBlock::Shell {
+            title: "Shell".to_string(),
+            output: trimmed.to_string(),
+        });
     } else {
         blocks.push(MessageBlock::Code {
             language: lang,
@@ -177,4 +239,12 @@ enum MessageBlock {
     Text(String),
     Code { language: String, code: String },
     Diff { title: String, diff: String },
+    Shell { title: String, output: String },
+}
+
+fn is_shell_language(language: &str) -> bool {
+    matches!(
+        language.to_ascii_lowercase().as_str(),
+        "sh" | "bash" | "zsh" | "shell" | "console"
+    )
 }

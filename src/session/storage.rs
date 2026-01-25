@@ -21,6 +21,13 @@ pub struct StoredSession {
     pub messages: Vec<SessionMessage>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StoredDiffDecision {
+    pub message_index: usize,
+    pub block_index: usize,
+    pub accepted: bool,
+}
+
 impl SessionStorage {
     pub fn new() -> Self {
         Self {
@@ -83,6 +90,31 @@ impl SessionStorage {
             return Ok(());
         }
         fs::remove_dir_all(dir)
+    }
+
+    pub fn save_diff_decisions(
+        &self,
+        id: SessionId,
+        decisions: &[StoredDiffDecision],
+    ) -> io::Result<()> {
+        let dir = self.session_dir(id);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("diff_decisions.json");
+        let data = serde_json::to_vec(decisions)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+        fs::write(path, data)
+    }
+
+    pub fn load_diff_decisions(&self, id: SessionId) -> io::Result<Vec<StoredDiffDecision>> {
+        let dir = self.session_dir(id);
+        let path = dir.join("diff_decisions.json");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let bytes = fs::read(path)?;
+        let decisions: Vec<StoredDiffDecision> = serde_json::from_slice(&bytes)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+        Ok(decisions)
     }
 
     fn session_dir(&self, id: SessionId) -> PathBuf {
@@ -241,5 +273,31 @@ mod tests {
         assert!(session_dir.exists());
         storage.delete_session(session.id).expect("delete");
         assert!(!session_dir.exists());
+    }
+
+    #[test]
+    fn save_and_load_diff_decisions_roundtrip() {
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+        let id = SessionId::new(42);
+        let decisions = vec![
+            StoredDiffDecision {
+                message_index: 1,
+                block_index: 0,
+                accepted: true,
+            },
+            StoredDiffDecision {
+                message_index: 3,
+                block_index: 2,
+                accepted: false,
+            },
+        ];
+        storage.save_diff_decisions(id, &decisions).expect("save");
+        let loaded = storage.load_diff_decisions(id).expect("load");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].message_index, 1);
+        assert!(loaded[0].accepted);
+        assert_eq!(loaded[1].block_index, 2);
+        assert!(!loaded[1].accepted);
     }
 }
