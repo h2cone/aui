@@ -49,8 +49,8 @@ fn stream_text(text: String, tx: &mpsc::Sender<ProviderEvent>) {
     for ch in text.chars() {
         chunk.push(ch);
         if chunk.len() >= 64 {
-            let _ = tx.send(ProviderEvent::TextDelta(chunk.clone()));
-            chunk.clear();
+            let send_chunk = std::mem::take(&mut chunk);
+            let _ = tx.send(ProviderEvent::TextDelta(send_chunk));
         }
     }
     if !chunk.is_empty() {
@@ -546,8 +546,8 @@ fn track_openai_tool_call(
     name: Option<String>,
     args: Option<String>,
 ) {
-    let entry = tool_calls.entry(id).or_insert(OpenAiToolCall {
-        name: name.clone().unwrap_or_else(|| "tool".to_string()),
+    let entry = tool_calls.entry(id).or_insert_with(|| OpenAiToolCall {
+        name: "tool".to_string(),
         args: String::new(),
     });
     if let Some(name) = name {
@@ -665,5 +665,65 @@ fn fence_language_for_path(path: &Path) -> &'static str {
         "diff" => "diff",
         "sh" => "sh",
         _ => "text",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_text_chunks_and_reassembles() {
+        let (tx, rx) = mpsc::channel();
+        let text = "a".repeat(65);
+        stream_text(text.clone(), &tx);
+        drop(tx);
+
+        let mut chunks = Vec::new();
+        for event in rx.into_iter() {
+            match event {
+                ProviderEvent::TextDelta(chunk) => chunks.push(chunk),
+                _ => panic!("unexpected provider event"),
+            }
+        }
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 64);
+        assert_eq!(chunks[1].len(), 1);
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn track_openai_tool_call_updates_name_and_args() {
+        let mut tool_calls: HashMap<String, OpenAiToolCall> = HashMap::new();
+        track_openai_tool_call(
+            &mut tool_calls,
+            "a".to_string(),
+            None,
+            Some("x".to_string()),
+        );
+        let first = tool_calls.get("a").expect("missing tool call");
+        assert_eq!(first.name, "tool");
+        assert_eq!(first.args, "x");
+
+        track_openai_tool_call(
+            &mut tool_calls,
+            "a".to_string(),
+            Some("run".to_string()),
+            Some("y".to_string()),
+        );
+        let updated = tool_calls.get("a").expect("missing tool call");
+        assert_eq!(updated.name, "run");
+        assert_eq!(updated.args, "xy");
+
+        track_openai_tool_call(
+            &mut tool_calls,
+            "b".to_string(),
+            Some("first".to_string()),
+            None,
+        );
+        let second = tool_calls.get("b").expect("missing tool call");
+        assert_eq!(second.name, "first");
+        assert!(second.args.is_empty());
     }
 }

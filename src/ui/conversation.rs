@@ -189,7 +189,7 @@ fn flush_code_block(blocks: &mut Vec<MessageBlock>, language: &mut String, buffe
     let lang = if language.is_empty() {
         "code".to_string()
     } else {
-        language.clone()
+        std::mem::take(language)
     };
     if lang == "diff" {
         blocks.push(MessageBlock::Diff {
@@ -232,4 +232,69 @@ fn is_shell_language(language: &str) -> bool {
         language.to_ascii_lowercase().as_str(),
         "sh" | "bash" | "zsh" | "shell" | "console"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_blocks_handles_code_diff_and_shell() {
+        let content =
+            "hello\n```rs\nlet x = 1;\n```\nmore\n```diff\n+add\n```\n```sh\necho hi\n```\n";
+        let blocks = parse_blocks(content);
+        assert_eq!(blocks.len(), 5);
+
+        match &blocks[0] {
+            MessageBlock::Text(text) => assert_eq!(text, "hello"),
+            _ => panic!("expected text block"),
+        }
+        match &blocks[1] {
+            MessageBlock::Code { language, code } => {
+                assert_eq!(language, "rs");
+                assert_eq!(code, "let x = 1;");
+            }
+            _ => panic!("expected code block"),
+        }
+        match &blocks[2] {
+            MessageBlock::Text(text) => assert_eq!(text, "more"),
+            _ => panic!("expected text block"),
+        }
+        match &blocks[3] {
+            MessageBlock::Diff { title, diff } => {
+                assert_eq!(title, "Diff");
+                assert_eq!(diff, "+add");
+            }
+            _ => panic!("expected diff block"),
+        }
+        match &blocks[4] {
+            MessageBlock::Shell { title, output } => {
+                assert_eq!(title, "Shell");
+                assert_eq!(output, "echo hi");
+            }
+            _ => panic!("expected shell block"),
+        }
+    }
+
+    #[test]
+    fn parse_blocks_skips_empty_code_and_resets_language() {
+        let content = "```rs\n\n```\n```py\nprint(1)\n```\n``` \nvalue\n```\n";
+        let blocks = parse_blocks(content);
+        assert_eq!(blocks.len(), 2);
+
+        match &blocks[0] {
+            MessageBlock::Code { language, code } => {
+                assert_eq!(language, "py");
+                assert_eq!(code, "print(1)");
+            }
+            _ => panic!("expected code block"),
+        }
+        match &blocks[1] {
+            MessageBlock::Code { language, code } => {
+                assert_eq!(language, "code");
+                assert_eq!(code, "value");
+            }
+            _ => panic!("expected code block"),
+        }
+    }
 }

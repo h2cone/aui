@@ -47,9 +47,9 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let input = self.input.read(cx);
         let display_text = if input.content.is_empty() {
-            input.placeholder.clone()
+            input.placeholder.as_ref()
         } else {
-            input.content.clone()
+            input.content.as_ref()
         };
         let line_count = display_text.split('\n').count().max(1) as f32;
         let line_height = window.line_height();
@@ -69,43 +69,38 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let content = input.content.clone();
-        let selected_range = input.selected_range.clone();
+        let content = input.content.as_ref();
+        let selected_range = &input.selected_range;
         let cursor = input.cursor_offset();
         let style = window.text_style();
         let is_focused = input.focus_handle.is_focused(window);
 
         let (display_text, text_color, marked_range) = if content.is_empty() {
-            (input.placeholder.clone(), hsla(0.0, 0.0, 0.0, 0.35), None)
+            (input.placeholder.as_ref(), hsla(0.0, 0.0, 0.0, 0.35), None)
         } else {
-            (content, style.color, input.marked_range.clone())
+            (content, style.color, input.marked_range.as_ref())
         };
 
+        let font = style.font();
         let mut line_starts = Vec::new();
-        let mut line_texts: Vec<SharedString> = Vec::new();
-        let mut start = 0;
-        for line in display_text.split('\n') {
-            line_starts.push(start);
-            line_texts.push(line.to_string().into());
-            start += line.len() + 1;
-        }
-
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
-        let mut lines = Vec::with_capacity(line_texts.len());
+        let mut lines = Vec::new();
+        let mut start = 0;
 
-        for (line_ix, line_text) in line_texts.iter().enumerate() {
-            let line_start = line_starts[line_ix];
-            let line_len = line_text.len();
+        for line in display_text.split('\n') {
+            let line_start = start;
+            let line_len = line.len();
+            line_starts.push(line_start);
             let run = TextRun {
                 len: line_len,
-                font: style.font(),
+                font: font.clone(),
                 color: text_color,
                 background_color: None,
                 underline: None,
                 strikethrough: None,
             };
-            let runs = if let Some(marked_range) = marked_range.as_ref() {
+            let runs = if let Some(marked_range) = marked_range {
                 let line_end = line_start + line_len;
                 let mark_start = marked_range.start.max(line_start);
                 let mark_end = marked_range.end.min(line_end);
@@ -142,11 +137,13 @@ impl Element for TextElement {
                 vec![run]
             };
 
+            let line_text: SharedString = line.to_string().into();
             lines.push(
                 window
                     .text_system()
-                    .shape_line(line_text.clone(), font_size, &runs, None),
+                    .shape_line(line_text, font_size, &runs, None),
             );
+            start += line.len() + 1;
         }
 
         let mut selection = Vec::new();

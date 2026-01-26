@@ -22,6 +22,39 @@ pub fn markdown_block(content: SharedString) -> impl IntoElement {
 }
 
 fn render_markdown_blocks(content: &str) -> Vec<AnyElement> {
+    let blocks = parse_markdown_blocks(content);
+    let mut rendered = Vec::new();
+    for block in blocks {
+        match block {
+            MarkdownBlock::Heading { level, text } => rendered.push(render_heading(level, text)),
+            MarkdownBlock::Paragraph(text) => rendered.push(render_paragraph(text)),
+            MarkdownBlock::List(items) => rendered.push(render_list(items)),
+            MarkdownBlock::Quote(text) => rendered.push(render_quote(text)),
+        }
+    }
+
+    if rendered.is_empty() {
+        rendered.push(
+            div()
+                .text_sm()
+                .text_color(rgb(0x64748b))
+                .child("No markdown content.")
+                .into_any_element(),
+        );
+    }
+
+    rendered
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MarkdownBlock {
+    Heading { level: usize, text: String },
+    Paragraph(String),
+    List(Vec<String>),
+    Quote(String),
+}
+
+fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
     let mut blocks = Vec::new();
     let mut paragraph = Vec::new();
     let mut list_items = Vec::new();
@@ -30,30 +63,30 @@ fn render_markdown_blocks(content: &str) -> Vec<AnyElement> {
     for line in content.lines() {
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
-            flush_paragraph(&mut blocks, &mut paragraph);
-            flush_list(&mut blocks, &mut list_items);
-            flush_quote(&mut blocks, &mut quote_lines);
+            flush_paragraph_block(&mut blocks, &mut paragraph);
+            flush_list_block(&mut blocks, &mut list_items);
+            flush_quote_block(&mut blocks, &mut quote_lines);
             continue;
         }
 
         if let Some((level, text)) = parse_heading(trimmed) {
-            flush_paragraph(&mut blocks, &mut paragraph);
-            flush_list(&mut blocks, &mut list_items);
-            flush_quote(&mut blocks, &mut quote_lines);
-            blocks.push(render_heading(level, text));
+            flush_paragraph_block(&mut blocks, &mut paragraph);
+            flush_list_block(&mut blocks, &mut list_items);
+            flush_quote_block(&mut blocks, &mut quote_lines);
+            blocks.push(MarkdownBlock::Heading { level, text });
             continue;
         }
 
         if let Some(item) = parse_list_item(trimmed) {
-            flush_paragraph(&mut blocks, &mut paragraph);
-            flush_quote(&mut blocks, &mut quote_lines);
+            flush_paragraph_block(&mut blocks, &mut paragraph);
+            flush_quote_block(&mut blocks, &mut quote_lines);
             list_items.push(item);
             continue;
         }
 
         if let Some(quote) = parse_quote(trimmed) {
-            flush_paragraph(&mut blocks, &mut paragraph);
-            flush_list(&mut blocks, &mut list_items);
+            flush_paragraph_block(&mut blocks, &mut paragraph);
+            flush_list_block(&mut blocks, &mut list_items);
             quote_lines.push(quote);
             continue;
         }
@@ -61,19 +94,9 @@ fn render_markdown_blocks(content: &str) -> Vec<AnyElement> {
         paragraph.push(trimmed.to_string());
     }
 
-    flush_paragraph(&mut blocks, &mut paragraph);
-    flush_list(&mut blocks, &mut list_items);
-    flush_quote(&mut blocks, &mut quote_lines);
-
-    if blocks.is_empty() {
-        blocks.push(
-            div()
-                .text_sm()
-                .text_color(rgb(0x64748b))
-                .child("No markdown content.")
-                .into_any_element(),
-        );
-    }
+    flush_paragraph_block(&mut blocks, &mut paragraph);
+    flush_list_block(&mut blocks, &mut list_items);
+    flush_quote_block(&mut blocks, &mut quote_lines);
 
     blocks
 }
@@ -109,68 +132,68 @@ fn parse_quote(line: &str) -> Option<String> {
     line.strip_prefix("> ").map(|rest| rest.trim().to_string())
 }
 
-fn flush_paragraph(blocks: &mut Vec<AnyElement>, paragraph: &mut Vec<String>) {
+fn flush_paragraph_block(blocks: &mut Vec<MarkdownBlock>, paragraph: &mut Vec<String>) {
     if paragraph.is_empty() {
         return;
     }
     let text = paragraph.join("\n");
-    blocks.push(
-        div()
-            .text_sm()
-            .text_color(rgb(0x0f172a))
-            .child(text)
-            .into_any_element(),
-    );
+    blocks.push(MarkdownBlock::Paragraph(text));
     paragraph.clear();
 }
 
-fn flush_list(blocks: &mut Vec<AnyElement>, list_items: &mut Vec<String>) {
+fn flush_list_block(blocks: &mut Vec<MarkdownBlock>, list_items: &mut Vec<String>) {
     if list_items.is_empty() {
         return;
     }
-    let mut items = Vec::new();
-    for item in list_items.iter() {
-        items.push(
+    blocks.push(MarkdownBlock::List(std::mem::take(list_items)));
+}
+
+fn flush_quote_block(blocks: &mut Vec<MarkdownBlock>, quote_lines: &mut Vec<String>) {
+    if quote_lines.is_empty() {
+        return;
+    }
+    let text = quote_lines.join("\n");
+    blocks.push(MarkdownBlock::Quote(text));
+    quote_lines.clear();
+}
+
+fn render_paragraph(text: String) -> AnyElement {
+    div()
+        .text_sm()
+        .text_color(rgb(0x0f172a))
+        .child(text)
+        .into_any_element()
+}
+
+fn render_list(items: Vec<String>) -> AnyElement {
+    let mut rendered_items = Vec::new();
+    for item in items {
+        rendered_items.push(
             div()
                 .flex()
                 .items_start()
                 .gap_2()
                 .child(div().text_sm().text_color(rgb(0x94a3b8)).child("-"))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(0x0f172a))
-                        .child(item.clone()),
-                )
+                .child(div().text_sm().text_color(rgb(0x0f172a)).child(item))
                 .into_any_element(),
         );
     }
-    blocks.push(
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .children(items)
-            .into_any_element(),
-    );
-    list_items.clear();
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .children(rendered_items)
+        .into_any_element()
 }
 
-fn flush_quote(blocks: &mut Vec<AnyElement>, quote_lines: &mut Vec<String>) {
-    if quote_lines.is_empty() {
-        return;
-    }
-    let text = quote_lines.join("\n");
-    blocks.push(
-        div()
-            .flex()
-            .items_start()
-            .gap_2()
-            .child(div().w(px(3.)).bg(hsla(0.52, 0.4, 0.6, 0.4)).rounded_full())
-            .child(div().text_sm().text_color(rgb(0x475569)).child(text))
-            .into_any_element(),
-    );
-    quote_lines.clear();
+fn render_quote(text: String) -> AnyElement {
+    div()
+        .flex()
+        .items_start()
+        .gap_2()
+        .child(div().w(px(3.)).bg(hsla(0.52, 0.4, 0.6, 0.4)).rounded_full())
+        .child(div().text_sm().text_color(rgb(0x475569)).child(text))
+        .into_any_element()
 }
 
 fn render_heading(level: usize, text: String) -> AnyElement {
@@ -185,4 +208,57 @@ fn render_heading(level: usize, text: String) -> AnyElement {
         .text_color(rgb(0x0b1220))
         .child(text)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot_blocks(blocks: &[MarkdownBlock]) -> String {
+        let mut out = String::new();
+        for block in blocks {
+            match block {
+                MarkdownBlock::Heading { level, text } => {
+                    out.push_str(&format!("H{level}:{text}\n"));
+                }
+                MarkdownBlock::Paragraph(text) => {
+                    out.push_str("P:");
+                    out.push_str(text);
+                    out.push('\n');
+                }
+                MarkdownBlock::List(items) => {
+                    out.push_str("L:\n");
+                    for item in items {
+                        out.push_str("- ");
+                        out.push_str(item);
+                        out.push('\n');
+                    }
+                }
+                MarkdownBlock::Quote(text) => {
+                    out.push_str("Q:");
+                    out.push_str(text);
+                    out.push('\n');
+                }
+            }
+        }
+        out.trim_end().to_string()
+    }
+
+    #[test]
+    fn markdown_blocks_snapshot() {
+        let input = "# Title\n\nHello\nworld\n- one\n- two\n> note\n";
+        let blocks = parse_markdown_blocks(input);
+        let snapshot = snapshot_blocks(&blocks);
+        let expected = "H1:Title\nP:Hello\nworld\nL:\n- one\n- two\nQ:note";
+        assert_eq!(snapshot, expected);
+    }
+
+    #[test]
+    fn markdown_blocks_snapshot_multiple_quotes() {
+        let input = "> first\n> second\n\nplain";
+        let blocks = parse_markdown_blocks(input);
+        let snapshot = snapshot_blocks(&blocks);
+        let expected = "Q:first\nsecond\nP:plain";
+        assert_eq!(snapshot, expected);
+    }
 }

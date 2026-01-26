@@ -171,8 +171,8 @@ impl AuiApp {
             id.value(),
             self.sessions
                 .session(id)
-                .map(|session| session.provider.id.clone())
-                .unwrap_or_else(|| "unknown".to_string())
+                .map(|session| session.provider.id.as_str())
+                .unwrap_or("unknown")
         ));
         self.sessions
             .append_message(id, SessionRole::Assistant, "New session ready.".to_string());
@@ -427,7 +427,7 @@ impl AuiApp {
                 self.sessions.set_status(
                     id,
                     SessionStatus::Error {
-                        message: user_message.clone(),
+                        message: user_message,
                     },
                 );
                 self.persist_session(id);

@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -47,13 +47,13 @@ pub fn debug_enabled() -> bool {
     verbose_enabled()
 }
 
-pub fn log_path() -> PathBuf {
+pub fn log_path() -> &'static Path {
     LOG_PATH
         .get_or_init(|| {
             let dir = config_dir().unwrap_or_else(|| PathBuf::from("."));
             dir.join("aui").join("aui.log")
         })
-        .clone()
+        .as_path()
 }
 
 fn verbose_enabled() -> bool {

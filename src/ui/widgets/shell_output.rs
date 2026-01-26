@@ -27,7 +27,7 @@ pub fn shell_output(
             .font_family("Cascadia Mono")
             .text_size(px(13.))
             .text_color(rgb(0x0f172a))
-            .child(output.clone())
+            .child(output)
             .into_any_element()
     };
 

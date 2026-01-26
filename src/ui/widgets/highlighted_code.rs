@@ -483,3 +483,47 @@ const GENERIC_KEYWORDS: &[&str] = &[
     "enum", "false", "fn", "for", "if", "impl", "import", "let", "match", "new", "null", "return",
     "struct", "switch", "this", "true", "type", "use", "while",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind_label(kind: SpanKind) -> &'static str {
+        match kind {
+            SpanKind::Normal => "Normal",
+            SpanKind::Keyword => "Keyword",
+            SpanKind::String => "String",
+            SpanKind::Comment => "Comment",
+            SpanKind::Number => "Number",
+        }
+    }
+
+    fn snapshot_code(code: &str, language: &str) -> String {
+        let mut lines = Vec::new();
+        for line in code.lines() {
+            let mut parts = Vec::new();
+            for span in highlight_line(line, language) {
+                let label = kind_label(span.kind);
+                parts.push(format!("{label}({})", span.text));
+            }
+            lines.push(parts.join("|"));
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn highlighted_code_snapshot_rust() {
+        let code = "let x = 42;\n// note\nlet s = \"hi\";";
+        let snapshot = snapshot_code(code, "rust");
+        let expected = "Keyword(let)|Normal( )|Normal(x)|Normal( = )|Number(42)|Normal(;)\nComment(// note)\nKeyword(let)|Normal( )|Normal(s)|Normal( = )|String(\"hi\")|Normal(;)";
+        assert_eq!(snapshot, expected);
+    }
+
+    #[test]
+    fn highlighted_code_snapshot_shell() {
+        let code = "echo \"hi\"\n# note\nexport PATH=/bin";
+        let snapshot = snapshot_code(code, "sh");
+        let expected = "Normal(echo)|Normal( )|String(\"hi\")\nComment(# note)\nKeyword(export)|Normal( )|Normal(PATH)|Normal(=/)|Normal(bin)";
+        assert_eq!(snapshot, expected);
+    }
+}

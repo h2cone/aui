@@ -202,7 +202,7 @@ impl TextInput {
 
         let next_index = match self.history_index {
             None => {
-                self.history_draft = self.content.clone();
+                self.history_draft = std::mem::take(&mut self.content);
                 self.sent_messages.len().saturating_sub(1)
             }
             Some(index) => index.saturating_sub(1),
@@ -223,7 +223,7 @@ impl TextInput {
         let next_index = current + 1;
         if next_index >= self.sent_messages.len() {
             self.history_index = None;
-            self.content = self.history_draft.clone();
+            self.content = std::mem::take(&mut self.history_draft);
         } else {
             self.history_index = Some(next_index);
             self.content = self.sent_messages[next_index].clone();
@@ -587,5 +587,100 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn text_input_history_roundtrip(cx: &mut TestAppContext) {
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(cx));
+        cx.focus(&input);
+
+        input.update_in(cx, |input, window, cx| {
+            input.replace_text_in_range(None, "first", window, cx);
+        });
+        let first = input
+            .update(cx, |input, _| input.take_submission())
+            .expect("first submission");
+        assert_eq!(first.as_ref(), "first");
+
+        input.update_in(cx, |input, window, cx| {
+            input.replace_text_in_range(None, "second", window, cx);
+        });
+        let second = input
+            .update(cx, |input, _| input.take_submission())
+            .expect("second submission");
+        assert_eq!(second.as_ref(), "second");
+
+        input.update_in(cx, |input, window, cx| {
+            input.replace_text_in_range(None, "draft", window, cx);
+        });
+
+        input.update_in(cx, |input, window, cx| {
+            input.history_prev(&HistoryPrev, window, cx);
+        });
+        let (content, index, draft) = input.read_with(cx, |input, _| {
+            (
+                input.content.clone(),
+                input.history_index,
+                input.history_draft.clone(),
+            )
+        });
+        assert_eq!(content.as_ref(), "second");
+        assert_eq!(index, Some(1));
+        assert_eq!(draft.as_ref(), "draft");
+
+        input.update_in(cx, |input, window, cx| {
+            input.history_prev(&HistoryPrev, window, cx);
+        });
+        let (content, index) =
+            input.read_with(cx, |input, _| (input.content.clone(), input.history_index));
+        assert_eq!(content.as_ref(), "first");
+        assert_eq!(index, Some(0));
+
+        input.update_in(cx, |input, window, cx| {
+            input.history_next(&HistoryNext, window, cx);
+        });
+        let (content, index) =
+            input.read_with(cx, |input, _| (input.content.clone(), input.history_index));
+        assert_eq!(content.as_ref(), "second");
+        assert_eq!(index, Some(1));
+
+        input.update_in(cx, |input, window, cx| {
+            input.history_next(&HistoryNext, window, cx);
+        });
+        let (content, index) =
+            input.read_with(cx, |input, _| (input.content.clone(), input.history_index));
+        assert_eq!(content.as_ref(), "draft");
+        assert_eq!(index, None);
+    }
+
+    #[gpui::test]
+    fn text_input_selection_reverses(cx: &mut TestAppContext) {
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(cx));
+
+        input.update(cx, |input, cx| {
+            input.content = "hello".into();
+            input.move_to(5, cx);
+            input.select_to(3, cx);
+        });
+        let (range, reversed) = input.read_with(cx, |input, _| {
+            (input.selected_range.clone(), input.selection_reversed)
+        });
+        assert_eq!(range, 3..5);
+        assert!(reversed);
+
+        input.update(cx, |input, cx| {
+            input.select_to(6, cx);
+        });
+        let (range, reversed) = input.read_with(cx, |input, _| {
+            (input.selected_range.clone(), input.selection_reversed)
+        });
+        assert_eq!(range, 5..6);
+        assert!(!reversed);
     }
 }
