@@ -423,17 +423,17 @@ impl EntityInputHandler for TextInput {
             self.history_index = None;
             self.history_draft = self.content.clone();
         }
+        let marked = self.marked_range.take();
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
+            .or(marked)
+            .unwrap_or_else(|| self.selected_range.clone());
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
-        self.marked_range.take();
         cx.notify();
     }
 
@@ -449,11 +449,12 @@ impl EntityInputHandler for TextInput {
             self.history_index = None;
             self.history_draft = self.content.clone();
         }
+        let marked = self.marked_range.take();
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .or(self.marked_range.clone())
-            .unwrap_or(self.selected_range.clone());
+            .or(marked)
+            .unwrap_or_else(|| self.selected_range.clone());
 
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])

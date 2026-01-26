@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 pub mod adapters;
@@ -6,13 +7,13 @@ pub mod bridge;
 
 #[derive(Clone, Debug)]
 pub struct ProviderInfo {
-    pub id: String,
-    pub name: String,
+    pub id: Arc<str>,
+    pub name: Arc<str>,
     pub kind: ProviderKind,
 }
 
 impl ProviderInfo {
-    pub fn new(id: impl Into<String>, name: impl Into<String>, kind: ProviderKind) -> Self {
+    pub fn new(id: impl Into<Arc<str>>, name: impl Into<Arc<str>>, kind: ProviderKind) -> Self {
         Self {
             id: id.into(),
             name: name.into(),

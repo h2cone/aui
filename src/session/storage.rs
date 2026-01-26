@@ -123,11 +123,11 @@ impl SessionStorage {
 
     fn write_meta(&self, dir: &Path, session: &crate::session::Session) -> io::Result<()> {
         let meta_path = dir.join("meta.json");
-        let payload = Meta {
+        let payload = MetaWrite {
             id: session.id.value(),
-            title: session.title.clone(),
-            provider_id: session.provider.id.clone(),
-            provider_name: session.provider.name.clone(),
+            title: session.title.as_str(),
+            provider_id: session.provider.id.as_ref(),
+            provider_name: session.provider.name.as_ref(),
         };
         let data = serde_json::to_vec(&payload)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
@@ -143,9 +143,9 @@ impl SessionStorage {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::from_secs(0))
                 .as_secs();
-            let payload = MessageLine {
-                role: message.role.as_str().to_string(),
-                content: message.content.clone(),
+            let payload = MessageLineWrite {
+                role: message.role.as_str(),
+                content: message.content.as_str(),
                 ts,
             };
             let line = serde_json::to_string(&payload)
@@ -168,10 +168,25 @@ struct Meta {
     provider_name: String,
 }
 
+#[derive(Serialize)]
+struct MetaWrite<'a> {
+    id: u64,
+    title: &'a str,
+    provider_id: &'a str,
+    provider_name: &'a str,
+}
+
 #[derive(Serialize, Deserialize)]
 struct MessageLine {
     role: String,
     content: String,
+    ts: u64,
+}
+
+#[derive(Serialize)]
+struct MessageLineWrite<'a> {
+    role: &'a str,
+    content: &'a str,
     ts: u64,
 }
 
@@ -254,8 +269,8 @@ mod tests {
         let stored = &loaded[0];
         assert_eq!(stored.id.value(), session.id.value());
         assert_eq!(stored.title, session.title);
-        assert_eq!(stored.provider_id, session.provider.id);
-        assert_eq!(stored.provider_name, session.provider.name);
+        assert_eq!(stored.provider_id, session.provider.id.as_ref());
+        assert_eq!(stored.provider_name, session.provider.name.as_ref());
         assert_eq!(stored.messages.len(), session.messages.len());
         assert_eq!(stored.messages[0].content, "hello");
         let ts = stored.messages[0]

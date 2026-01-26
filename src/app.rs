@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
@@ -28,7 +29,7 @@ pub struct AuiApp {
     sessions: SessionManager,
     bridge: BridgeClient,
     attachments: Vec<Attachment>,
-    new_session_provider_id: String,
+    new_session_provider_id: Arc<str>,
     storage: SessionStorage,
     stream_targets: HashMap<SessionId, usize>,
     diff_decisions: HashMap<DiffKey, DiffDecision>,
@@ -125,9 +126,9 @@ impl AuiApp {
         }
 
         let new_session_provider_id = bridge
-            .provider_by_id(&config.default_provider_id)
+            .provider_by_id(config.default_provider_id.as_str())
             .map(|provider| provider.id)
-            .unwrap_or_else(|| "claude-code".to_string());
+            .unwrap_or_else(|| "claude-code".into());
 
         Self {
             text_input,
@@ -163,7 +164,7 @@ impl AuiApp {
         let title = format!("session-{}", next);
         let provider = self
             .bridge
-            .provider_by_id(&self.new_session_provider_id)
+            .provider_by_id(self.new_session_provider_id.as_ref())
             .unwrap_or_else(|| select_provider(&self.bridge, ProviderKind::Anthropic));
         let id = self.sessions.create_session(title, provider);
         logger::debug(&format!(
@@ -171,7 +172,7 @@ impl AuiApp {
             id.value(),
             self.sessions
                 .session(id)
-                .map(|session| session.provider.id.as_str())
+                .map(|session| session.provider.id.as_ref())
                 .unwrap_or("unknown")
         ));
         self.sessions
@@ -183,8 +184,8 @@ impl AuiApp {
 
     pub fn new_session_provider_label(&self) -> String {
         self.bridge
-            .provider_by_id(&self.new_session_provider_id)
-            .map(|provider| provider.name)
+            .provider_by_id(self.new_session_provider_id.as_ref())
+            .map(|provider| provider.name.as_ref().to_string())
             .unwrap_or_else(|| "Anthropic".to_string())
     }
 
@@ -195,7 +196,7 @@ impl AuiApp {
         }
         let current_ix = providers
             .iter()
-            .position(|provider| provider.id == self.new_session_provider_id)
+            .position(|provider| provider.id.as_ref() == self.new_session_provider_id.as_ref())
             .unwrap_or(0);
         let next_ix = (current_ix + 1) % providers.len();
         self.new_session_provider_id = providers[next_ix].id.clone();
@@ -288,7 +289,7 @@ impl AuiApp {
         logger::debug(&format!(
             "bridge send session={} provider={}",
             active_id.value(),
-            provider.id.as_str()
+            provider.id.as_ref()
         ));
         let attachments = std::mem::take(&mut self.attachments);
         let stream = self.bridge.connect(&provider).send(UserMessage {
@@ -495,7 +496,7 @@ impl AuiApp {
         cx.notify();
     }
 
-    pub fn add_attachments(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+    pub fn add_attachments(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         for path in paths {
             let name = path
                 .file_name()
@@ -504,13 +505,13 @@ impl AuiApp {
             if self
                 .attachments
                 .iter()
-                .any(|existing| existing.path.as_ref() == Some(path))
+                .any(|existing| existing.path.as_ref() == Some(&path))
             {
                 continue;
             }
             self.attachments.push(Attachment {
                 name,
-                path: Some(path.clone()),
+                path: Some(path),
             });
         }
         cx.notify();
@@ -541,7 +542,7 @@ impl AuiApp {
                 match result {
                     Ok(Ok(Some(paths))) => {
                         let _ = handle.update(&mut cx, |view, cx| {
-                            view.add_attachments(&paths, cx);
+                            view.add_attachments(paths, cx);
                         });
                     }
                     Ok(Ok(None)) => {}
@@ -608,7 +609,7 @@ fn export_session_markdown(session: &Session) -> String {
     out.push_str(&session.title);
     out.push_str("\n\n");
     out.push_str("- Provider: ");
-    out.push_str(&session.provider.name);
+    out.push_str(session.provider.name.as_ref());
     out.push('\n');
     out.push_str("- Exported: ");
     out.push_str(&format_system_time(std::time::SystemTime::now()));
@@ -809,7 +810,7 @@ impl Render for AuiApp {
                                 .child(
                                     div().text_sm().text_color(rgb(0x5b6777)).child(
                                         active_session
-                                            .map(|session| session.provider.name.clone())
+                                            .map(|session| session.provider.name.to_string())
                                             .unwrap_or_else(|| "Select a session".to_string()),
                                     ),
                                 ),

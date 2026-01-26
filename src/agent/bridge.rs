@@ -35,7 +35,7 @@ impl BridgeClient {
     pub fn provider_by_id(&self, id: &str) -> Option<ProviderInfo> {
         self.providers
             .iter()
-            .find(|provider| provider.id == id)
+            .find(|provider| provider.id.as_ref() == id)
             .cloned()
     }
 
@@ -134,8 +134,7 @@ fn send_openai_stream(
     parse_sse_stream(response, |data| {
         if data == "[DONE]" {
             if !tool_calls.is_empty() {
-                flush_tool_calls(&tool_calls, tx);
-                tool_calls.clear();
+                flush_tool_calls(&mut tool_calls, tx);
             }
             let _ = tx.send(ProviderEvent::Done);
             return Ok(true);
@@ -197,8 +196,7 @@ fn send_openai_stream(
             .and_then(Value::as_str)
         {
             if finish_reason == "tool_calls" && !tool_calls.is_empty() {
-                flush_tool_calls(&tool_calls, tx);
-                tool_calls.clear();
+                flush_tool_calls(&mut tool_calls, tx);
             }
         }
 
@@ -559,13 +557,13 @@ fn track_openai_tool_call(
 }
 
 fn flush_tool_calls(
-    tool_calls: &HashMap<String, OpenAiToolCall>,
+    tool_calls: &mut HashMap<String, OpenAiToolCall>,
     tx: &mpsc::Sender<ProviderEvent>,
 ) {
-    for call in tool_calls.values() {
+    for (_, call) in tool_calls.drain() {
         let _ = tx.send(ProviderEvent::ToolStart {
-            name: call.name.clone(),
-            input: call.args.clone(),
+            name: call.name,
+            input: call.args,
         });
     }
 }

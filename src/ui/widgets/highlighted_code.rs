@@ -243,10 +243,9 @@ fn split_keywords(text: &str, keywords: &'static [&'static str]) -> Vec<Span> {
         if is_word_char(ch) {
             if !buffer.is_empty() {
                 spans.push(Span {
-                    text: buffer.clone(),
+                    text: std::mem::take(&mut buffer),
                     kind: SpanKind::Normal,
                 });
-                buffer.clear();
             }
             let start = index;
             let mut end = index + ch.len_utf8();
