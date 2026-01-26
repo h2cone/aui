@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
+use gpui::SharedString;
+
 pub mod adapters;
 pub mod bridge;
 
@@ -71,8 +73,8 @@ pub enum SessionStatus {
     Idle,
     Thinking,
     Executing { tool: String },
-    WaitingInput { prompt: String },
-    Error { message: String },
+    WaitingInput { prompt: SharedString },
+    Error { message: SharedString },
 }
 
 pub struct ProviderStream {

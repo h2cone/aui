@@ -1,6 +1,6 @@
 use gpui::{
-    BoxShadow, Context, CursorStyle, FontWeight, IntoElement, MouseButton, div, hsla, prelude::*,
-    px, rgb,
+    BoxShadow, Context, CursorStyle, FontWeight, IntoElement, MouseButton, SharedString, div, hsla,
+    prelude::*, px, rgb,
 };
 
 use crate::agent::SessionStatus;
@@ -84,7 +84,7 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                                                 view.cycle_session_provider(id, cx);
                                             }),
                                         )
-                                        .child(session.provider.name.to_string()),
+                                        .child(SharedString::from(session.provider.name.clone())),
                                 ),
                         ),
                 )

@@ -125,7 +125,7 @@ impl SessionStorage {
         let meta_path = dir.join("meta.json");
         let payload = MetaWrite {
             id: session.id.value(),
-            title: session.title.as_str(),
+            title: session.title.as_ref(),
             provider_id: session.provider.id.as_ref(),
             provider_name: session.provider.name.as_ref(),
         };
@@ -220,6 +220,8 @@ mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
 
+    use gpui::SharedString;
+
     use tempfile::tempdir;
 
     use crate::agent::{ProviderInfo, ProviderKind, SessionStatus};
@@ -229,7 +231,7 @@ mod tests {
         let timestamp = UNIX_EPOCH + Duration::from_secs(123);
         Session {
             id: SessionId::new(id),
-            title: "alpha".to_string(),
+            title: SharedString::from("alpha"),
             provider: ProviderInfo::new("test", "Test Provider", ProviderKind::Anthropic),
             status: SessionStatus::Idle,
             stats: SessionStats::new(),
@@ -268,7 +270,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         let stored = &loaded[0];
         assert_eq!(stored.id.value(), session.id.value());
-        assert_eq!(stored.title, session.title);
+        assert_eq!(stored.title, session.title.as_ref());
         assert_eq!(stored.provider_id, session.provider.id.as_ref());
         assert_eq!(stored.provider_name, session.provider.name.as_ref());
         assert_eq!(stored.messages.len(), session.messages.len());

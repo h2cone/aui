@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant, SystemTime};
 
+use gpui::SharedString;
+
 use crate::agent::{ProviderInfo, SessionStatus};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -74,7 +76,7 @@ impl SessionStats {
 #[derive(Clone, Debug)]
 pub struct Session {
     pub id: SessionId,
-    pub title: String,
+    pub title: SharedString,
     pub provider: ProviderInfo,
     pub status: SessionStatus,
     pub stats: SessionStats,
@@ -142,7 +144,7 @@ impl SessionManager {
 
     pub fn create_session(
         &mut self,
-        title: impl Into<String>,
+        title: impl Into<SharedString>,
         provider: ProviderInfo,
     ) -> SessionId {
         let id = SessionId::new(self.next_id);

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    Context, Entity, FontWeight, PathPromptOptions, ScrollHandle, Window, div, hsla,
+    Context, Entity, FontWeight, PathPromptOptions, ScrollHandle, SharedString, Window, div, hsla,
     linear_color_stop, linear_gradient, prelude::*, px, rgb,
 };
 
@@ -182,11 +182,11 @@ impl AuiApp {
         cx.notify();
     }
 
-    pub fn new_session_provider_label(&self) -> String {
+    pub fn new_session_provider_label(&self) -> SharedString {
         self.bridge
             .provider_by_id(self.new_session_provider_id.as_ref())
-            .map(|provider| provider.name.as_ref().to_string())
-            .unwrap_or_else(|| "Anthropic".to_string())
+            .map(|provider| SharedString::from(provider.name.clone()))
+            .unwrap_or_else(|| SharedString::from("Anthropic"))
     }
 
     pub fn cycle_new_session_provider(&mut self, cx: &mut Context<Self>) {
@@ -559,7 +559,7 @@ impl AuiApp {
             return;
         };
         let handle = cx.entity().downgrade();
-        let suggested = format!("{}.md", sanitize_filename(&session.title));
+        let suggested = format!("{}.md", sanitize_filename(session.title.as_ref()));
         let dir = config::data_dir();
         window.defer(cx, move |_, app| {
             let async_app = app.to_async();
@@ -606,7 +606,7 @@ fn sanitize_filename(name: &str) -> String {
 fn export_session_markdown(session: &Session) -> String {
     let mut out = String::new();
     out.push_str("# ");
-    out.push_str(&session.title);
+    out.push_str(session.title.as_ref());
     out.push_str("\n\n");
     out.push_str("- Provider: ");
     out.push_str(session.provider.name.as_ref());
@@ -802,7 +802,10 @@ impl Render for AuiApp {
                                         .child(
                                             active_session
                                                 .map(|session| {
-                                                    format!("{} conversation", session.title)
+                                                    format!(
+                                                        "{} conversation",
+                                                        session.title.as_ref()
+                                                    )
                                                 })
                                                 .unwrap_or_else(|| "Conversation".to_string()),
                                         ),
@@ -810,8 +813,12 @@ impl Render for AuiApp {
                                 .child(
                                     div().text_sm().text_color(rgb(0x5b6777)).child(
                                         active_session
-                                            .map(|session| session.provider.name.to_string())
-                                            .unwrap_or_else(|| "Select a session".to_string()),
+                                            .map(|session| {
+                                                SharedString::from(session.provider.name.clone())
+                                            })
+                                            .unwrap_or_else(|| {
+                                                SharedString::from("Select a session")
+                                            }),
                                     ),
                                 ),
                         ),
@@ -862,7 +869,7 @@ fn restore_sessions(
         let provider = resolve_stored_provider(bridge, &stored);
         let session = crate::session::Session {
             id: stored.id,
-            title: stored.title,
+            title: SharedString::from(stored.title),
             provider,
             status: SessionStatus::Idle,
             stats: crate::session::SessionStats::new(),
@@ -892,19 +899,19 @@ fn resolve_stored_provider(bridge: &BridgeClient, stored: &StoredSession) -> Pro
     )
 }
 
-fn friendly_error_message(raw: &str) -> String {
+fn friendly_error_message(raw: &str) -> SharedString {
     let message = raw.to_ascii_lowercase();
     if message.contains("missing") && message.contains("api_key") {
-        return "Agent credentials are not configured.".to_string();
+        return SharedString::from("Agent credentials are not configured.");
     }
     if message.contains("unauthorized") || message.contains("401") || message.contains("403") {
-        return "Agent authentication failed.".to_string();
+        return SharedString::from("Agent authentication failed.");
     }
     if message.contains("timeout") {
-        return "Agent request timed out.".to_string();
+        return SharedString::from("Agent request timed out.");
     }
     if message.contains("http") {
-        return "Agent request failed. Check your network or settings.".to_string();
+        return SharedString::from("Agent request failed. Check your network or settings.");
     }
-    "Agent error. Check logs for details.".to_string()
+    SharedString::from("Agent error. Check logs for details.")
 }
