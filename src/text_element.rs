@@ -242,8 +242,7 @@ impl Element for TextElement {
         let line_height = prepaint.line_height;
         for (line_ix, line) in lines.iter().enumerate() {
             let y = bounds.top() + line_height * line_ix as f32;
-            line.paint(point(bounds.left(), y), line_height, window, cx)
-                .unwrap();
+            let _ = line.paint(point(bounds.left(), y), line_height, window, cx);
         }
 
         if focus_handle.is_focused(window)

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +32,8 @@ pub struct AuiApp {
     new_session_provider_id: Arc<str>,
     storage: SessionStorage,
     stream_targets: HashMap<SessionId, usize>,
+    dirty_sessions: HashSet<SessionId>,
+    persist_generation: u64,
     diff_decisions: HashMap<DiffKey, DiffDecision>,
     shell_collapsed: HashMap<ShellKey, bool>,
     conversation_scroll: ScrollHandle,
@@ -138,6 +140,8 @@ impl AuiApp {
             new_session_provider_id,
             storage,
             stream_targets: HashMap::new(),
+            dirty_sessions: HashSet::new(),
+            persist_generation: 0,
             diff_decisions,
             shell_collapsed: HashMap::new(),
             conversation_scroll,
@@ -177,7 +181,7 @@ impl AuiApp {
         ));
         self.sessions
             .append_message(id, SessionRole::Assistant, "New session ready.".to_string());
-        self.persist_session(id);
+        self.persist_sessions_immediate([id]);
         self.conversation_scroll.scroll_to_bottom();
         cx.notify();
     }
@@ -217,7 +221,7 @@ impl AuiApp {
             .unwrap_or(0);
         let next_ix = (current_ix + 1) % providers.len();
         session.provider = providers[next_ix].clone();
-        self.persist_session(id);
+        self.persist_sessions_immediate([id]);
         cx.notify();
     }
 
@@ -278,7 +282,7 @@ impl AuiApp {
         self.conversation_scroll.scroll_to_bottom();
 
         self.sessions.set_status(active_id, SessionStatus::Thinking);
-        self.persist_session(active_id);
+        self.persist_sessions_immediate([active_id]);
         cx.notify();
 
         let provider = self
@@ -309,7 +313,7 @@ impl AuiApp {
                     let is_terminal =
                         matches!(event, ProviderEvent::Done | ProviderEvent::Error(_));
                     let _ = handle.update(cx, |view, cx| {
-                        view.apply_stream_event(active_id, event);
+                        view.apply_stream_event(active_id, event, cx);
                         cx.notify();
                     });
                     if is_terminal {
@@ -343,7 +347,7 @@ impl AuiApp {
         self.export_active_session(window, cx);
     }
 
-    fn apply_stream_event(&mut self, id: SessionId, event: ProviderEvent) {
+    fn apply_stream_event(&mut self, id: SessionId, event: ProviderEvent, cx: &mut Context<Self>) {
         match event {
             ProviderEvent::TextDelta(delta) => {
                 logger::debug(&format!(
@@ -358,7 +362,7 @@ impl AuiApp {
                         }
                     }
                 }
-                self.persist_session(id);
+                self.persist_session_debounced(id, cx);
                 self.conversation_scroll.scroll_to_bottom();
             }
             ProviderEvent::ToolStart { name, input } => {
@@ -371,11 +375,9 @@ impl AuiApp {
                 self.sessions.push_message(
                     id,
                     SessionRole::Tool,
-                    format!("Tool start: {name}\n{input}"),
+                    format!("Tool call: {name}\n{input}"),
                 );
-                self.sessions
-                    .set_status(id, SessionStatus::Executing { tool: name });
-                self.persist_session(id);
+                self.persist_sessions_immediate([id]);
                 self.conversation_scroll.scroll_to_bottom();
             }
             ProviderEvent::ToolResult { name, output } => {
@@ -388,10 +390,9 @@ impl AuiApp {
                 self.sessions.push_message(
                     id,
                     SessionRole::Tool,
-                    format!("Tool result: {name}\n{output}"),
+                    format!("Tool output: {name}\n{output}"),
                 );
-                self.sessions.set_status(id, SessionStatus::Thinking);
-                self.persist_session(id);
+                self.persist_sessions_immediate([id]);
                 self.conversation_scroll.scroll_to_bottom();
             }
             ProviderEvent::TokenUsage { input, output } => {
@@ -408,13 +409,13 @@ impl AuiApp {
                     .unwrap_or(ProviderKind::Anthropic);
                 let cost = estimate_cost_usd(kind, input, output);
                 self.sessions.bump_usage(id, input, output, cost);
-                self.persist_session(id);
+                self.persist_session_debounced(id, cx);
             }
             ProviderEvent::Done => {
                 logger::debug(&format!("stream done session={}", id.value()));
                 self.stream_targets.remove(&id);
                 self.sessions.set_status(id, SessionStatus::Idle);
-                self.persist_session(id);
+                self.persist_sessions_immediate([id]);
                 self.conversation_scroll.scroll_to_bottom();
             }
             ProviderEvent::Error(message) => {
@@ -431,22 +432,55 @@ impl AuiApp {
                         message: user_message,
                     },
                 );
-                self.persist_session(id);
+                self.persist_sessions_immediate([id]);
                 self.conversation_scroll.scroll_to_bottom();
             }
         }
     }
 
-    fn persist_session(&self, id: SessionId) {
-        if let Some(session) = self.sessions.session(id) {
-            if let Err(err) = self.storage.save_session(session) {
-                logger::warn(&format!(
-                    "session save failed id={} error={}",
-                    id.value(),
-                    err
-                ));
+    fn persist_session_debounced(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        const DEBOUNCE: Duration = Duration::from_millis(450);
+
+        self.dirty_sessions.insert(id);
+        self.persist_generation = self.persist_generation.wrapping_add(1);
+        let generation = self.persist_generation;
+        let handle = cx.entity().downgrade();
+        gpui::App::spawn(cx, async move |cx| {
+            gpui::Timer::after(DEBOUNCE).await;
+            let _ = handle.update(cx, |view, _cx| {
+                if view.persist_generation != generation {
+                    return;
+                }
+                let ids: Vec<SessionId> = view.dirty_sessions.drain().collect();
+                view.persist_sessions_immediate(ids);
+            });
+        })
+        .detach();
+    }
+
+    fn persist_sessions_immediate(&mut self, ids: impl IntoIterator<Item = SessionId>) {
+        let mut sessions = Vec::new();
+        for id in ids {
+            if let Some(session) = self.sessions.session(id).cloned() {
+                sessions.push(session);
             }
         }
+        if sessions.is_empty() {
+            return;
+        }
+
+        let storage = self.storage.clone();
+        std::thread::spawn(move || {
+            for session in sessions {
+                if let Err(err) = storage.save_session(&session) {
+                    logger::warn(&format!(
+                        "session save failed id={} error={}",
+                        session.id.value(),
+                        err
+                    ));
+                }
+            }
+        });
     }
 
     pub fn diff_decision(&self, key: DiffKey) -> Option<DiffDecision> {

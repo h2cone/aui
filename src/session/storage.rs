@@ -6,8 +6,10 @@ use std::time::{Duration, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::config;
+use crate::logger;
 use crate::session::{SessionId, SessionMessage, SessionRole};
 
+#[derive(Clone)]
 pub struct SessionStorage {
     root: PathBuf,
 }
@@ -67,10 +69,39 @@ impl SessionStorage {
             if !meta_path.exists() {
                 continue;
             }
-            let meta_bytes = fs::read(&meta_path)?;
-            let meta: Meta = serde_json::from_slice(&meta_bytes)
-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
-            let messages = read_messages(&dir.join("messages.jsonl"))?;
+            let meta_bytes = match fs::read(&meta_path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    logger::warn(&format!(
+                        "session meta read failed dir={} err={}",
+                        dir.display(),
+                        err
+                    ));
+                    continue;
+                }
+            };
+            let meta: Meta = match serde_json::from_slice(&meta_bytes) {
+                Ok(meta) => meta,
+                Err(err) => {
+                    logger::warn(&format!(
+                        "session meta decode failed dir={} err={}",
+                        dir.display(),
+                        err
+                    ));
+                    continue;
+                }
+            };
+            let messages = match read_messages(&dir.join("messages.jsonl")) {
+                Ok(messages) => messages,
+                Err(err) => {
+                    logger::warn(&format!(
+                        "session messages load failed dir={} err={}",
+                        dir.display(),
+                        err
+                    ));
+                    Vec::new()
+                }
+            };
             sessions.push(StoredSession {
                 id: SessionId::new(meta.id),
                 title: meta.title,
@@ -319,5 +350,40 @@ mod tests {
         assert!(loaded[0].accepted);
         assert_eq!(loaded[1].block_index, 2);
         assert!(!loaded[1].accepted);
+    }
+
+    #[test]
+    fn load_sessions_skips_bad_meta() {
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+
+        let good = sample_session(1);
+        storage.save_session(&good).expect("save good");
+
+        let bad_dir = storage.root().join("session-99");
+        fs::create_dir_all(&bad_dir).expect("mkdir");
+        fs::write(bad_dir.join("meta.json"), b"{not json").expect("write meta");
+        fs::write(bad_dir.join("messages.jsonl"), b"").expect("write messages");
+
+        let loaded = storage.load_sessions().expect("load");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id.value(), good.id.value());
+    }
+
+    #[test]
+    fn load_sessions_loads_empty_messages_when_corrupted() {
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+
+        let session = sample_session(7);
+        storage.save_session(&session).expect("save");
+
+        let session_dir = storage.root().join("session-7");
+        fs::write(session_dir.join("messages.jsonl"), b"{not json}\n").expect("corrupt");
+
+        let loaded = storage.load_sessions().expect("load");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id.value(), session.id.value());
+        assert!(loaded[0].messages.is_empty());
     }
 }
