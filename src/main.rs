@@ -7,6 +7,8 @@ mod config;
 #[allow(dead_code)]
 mod logger;
 #[allow(dead_code)]
+mod model_catalog;
+#[allow(dead_code)]
 mod session;
 mod text_element;
 mod text_input;

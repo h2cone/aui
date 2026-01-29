@@ -1,9 +1,10 @@
 use gpui::{
     ClipboardItem, Context, CursorStyle, FontWeight, IntoElement, MouseButton, SharedString, div,
-    hsla, prelude::*, px, rgb,
+    hsla, prelude::*, px,
 };
 
 use crate::app::AuiApp;
+use crate::ui::theme;
 use crate::ui::widgets::highlighted_code::HighlightedCode;
 
 pub fn code_block(
@@ -15,9 +16,9 @@ pub fn code_block(
     let code_copy = code.clone();
     div()
         .rounded_lg()
-        .bg(hsla(0.55, 0.3, 0.97, 0.4))
+        .bg(theme::surface_3())
         .border_1()
-        .border_color(hsla(0.0, 0.0, 0.0, 0.08))
+        .border_color(theme::border())
         .px(px(16.))
         .py(px(12.))
         .child(
@@ -27,7 +28,7 @@ pub fn code_block(
                 .justify_between()
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(0x475569))
+                .text_color(theme::muted_text())
                 .child(label)
                 .child(
                     div()
@@ -35,10 +36,10 @@ pub fn code_block(
                         .py(px(4.))
                         .rounded_full()
                         .border_1()
-                        .border_color(hsla(0.0, 0.0, 0.0, 0.12))
+                        .border_color(theme::border())
                         .bg(hsla(0.0, 0.0, 1.0, 0.0))
                         .text_xs()
-                        .text_color(rgb(0x475569))
+                        .text_color(theme::muted_text())
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(
                             MouseButton::Left,
@@ -55,7 +56,7 @@ pub fn code_block(
             div()
                 .font_family("Cascadia Mono")
                 .text_size(px(14.))
-                .text_color(rgb(0x0f172a))
+                .text_color(theme::text())
                 .child(HighlightedCode {
                     text: code,
                     language,

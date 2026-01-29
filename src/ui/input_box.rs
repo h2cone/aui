@@ -1,7 +1,8 @@
-use gpui::{Context, Entity, IntoElement, div, prelude::*, rgb};
+use gpui::{Context, Entity, IntoElement, div, prelude::*};
 
 use crate::app::AuiApp;
 use crate::text_input::TextInput;
+use crate::ui::theme;
 
 pub fn render_input_box(
     text_input: &Entity<TextInput>,
@@ -18,7 +19,7 @@ pub fn render_input_box(
                 .items_center()
                 .justify_between()
                 .text_xs()
-                .text_color(rgb(0x5b6777))
+                .text_color(theme::subtle_text())
                 .child("Shift+Enter for newline")
                 .child("Cmd/Ctrl+Enter to send"),
         )

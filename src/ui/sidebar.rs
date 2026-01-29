@@ -1,10 +1,11 @@
 use gpui::{
-    BoxShadow, Context, CursorStyle, FontWeight, IntoElement, MouseButton, SharedString, div, hsla,
-    prelude::*, px, rgb,
+    Context, CursorStyle, FontWeight, IntoElement, MouseButton, SharedString, div, hsla,
+    prelude::*, px,
 };
 
 use crate::agent::SessionStatus;
 use crate::app::AuiApp;
+use crate::ui::theme;
 
 pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoElement {
     let active_id = view.active_session_id();
@@ -15,7 +16,7 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
         let is_active = active_id == Some(id);
         let dot_color = status_color(&session.status);
         let row_bg = if is_active {
-            hsla(0.52, 0.32, 0.92, 0.35)
+            theme::accent_bg()
         } else {
             hsla(0.0, 0.0, 1.0, 0.0)
         };
@@ -25,12 +26,12 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                 .flex()
                 .items_center()
                 .justify_between()
-                .rounded_lg()
+                .rounded_md()
                 .border_1()
-                .border_color(hsla(0.0, 0.0, 0.0, 0.06))
+                .border_color(theme::border())
                 .bg(row_bg)
-                .px(px(12.))
-                .py(px(10.))
+                .px(px(10.))
+                .py(px(8.))
                 .cursor(CursorStyle::PointingHand)
                 .on_mouse_down(
                     MouseButton::Left,
@@ -41,19 +42,7 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(
-                            div()
-                                .w(px(10.))
-                                .h(px(10.))
-                                .rounded_full()
-                                .bg(dot_color)
-                                .shadow(vec![BoxShadow {
-                                    color: dot_color,
-                                    offset: gpui::point(px(0.), px(0.)),
-                                    blur_radius: px(12.),
-                                    spread_radius: px(0.),
-                                }]),
-                        )
+                        .child(div().w(px(10.)).h(px(10.)).rounded_full().bg(dot_color))
                         .child(
                             div()
                                 .flex()
@@ -63,27 +52,13 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                                     div()
                                         .text_sm()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(rgb(0x0b1220))
+                                        .text_color(theme::text())
                                         .child(session.title.clone()),
                                 )
                                 .child(
                                     div()
-                                        .px(px(8.))
-                                        .py(px(2.))
-                                        .rounded_full()
-                                        .border_1()
-                                        .border_color(hsla(0.0, 0.0, 0.0, 0.08))
-                                        .bg(hsla(0.0, 0.0, 1.0, 0.0))
                                         .text_xs()
-                                        .text_color(rgb(0x5b6777))
-                                        .cursor(CursorStyle::PointingHand)
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _, _, cx| {
-                                                cx.stop_propagation();
-                                                view.cycle_session_provider(id, cx);
-                                            }),
-                                        )
+                                        .text_color(theme::muted_text())
                                         .child(SharedString::from(session.provider.name.clone())),
                                 ),
                         ),
@@ -96,19 +71,19 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(0x475569))
+                                .text_color(theme::subtle_text())
                                 .child(session.status_label()),
                         )
                         .child(
                             div()
-                                .px(px(6.))
-                                .py(px(2.))
-                                .rounded_full()
+                                .px(px(8.))
+                                .py(px(4.))
+                                .rounded_md()
                                 .border_1()
-                                .border_color(hsla(0.0, 0.0, 0.0, 0.08))
+                                .border_color(theme::border())
                                 .bg(hsla(0.0, 0.0, 1.0, 0.0))
                                 .text_xs()
-                                .text_color(rgb(0x64748b))
+                                .text_color(theme::muted_text())
                                 .cursor(CursorStyle::PointingHand)
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -117,7 +92,7 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                                         view.delete_session(id, cx);
                                     }),
                                 )
-                                .child("x"),
+                                .child("Del"),
                         ),
                 )
                 .into_any_element(),
@@ -131,51 +106,55 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
         .child(
             div()
                 .flex()
-                .flex_col()
-                .gap_1()
+                .items_center()
+                .justify_between()
                 .child(
                     div()
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(0x0b1220))
-                        .child("AUI Desktop"),
+                        .text_color(theme::text())
+                        .child("Sessions"),
                 )
-                .child(div().text_xs().text_color(rgb(0x5b6777)).child("Sessions")),
-        )
-        .child(
-            div()
-                .px(px(12.))
-                .py(px(6.))
-                .rounded_full()
-                .bg(hsla(0.48, 0.52, 0.9, 0.35))
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(0x0f172a))
-                .cursor(CursorStyle::PointingHand)
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|view, _, _, cx| view.new_session(cx)),
-                )
-                .child("+ New"),
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::subtle_text())
+                        .child(format!("{}", view.sessions().len())),
+                ),
         )
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .text_xs()
-                .text_color(rgb(0x5b6777))
-                .child("New session provider:")
                 .child(
                     div()
                         .px(px(10.))
-                        .py(px(4.))
-                        .rounded_full()
+                        .py(px(6.))
+                        .rounded_md()
                         .border_1()
-                        .border_color(hsla(0.0, 0.0, 0.0, 0.1))
+                        .border_color(theme::border())
                         .bg(hsla(0.0, 0.0, 1.0, 0.0))
                         .text_xs()
-                        .text_color(rgb(0x0f172a))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::text())
+                        .cursor(CursorStyle::PointingHand)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, cx| view.new_session(cx)),
+                        )
+                        .child("+ New"),
+                )
+                .child(
+                    div()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(hsla(0.0, 0.0, 1.0, 0.0))
+                        .text_xs()
+                        .text_color(theme::muted_text())
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(
                             MouseButton::Left,
@@ -184,21 +163,15 @@ pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoEleme
                         .child(view.new_session_provider_label()),
                 ),
         )
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(0x5b6777))
-                .child(format!("{} sessions", view.sessions().len())),
-        )
         .child(div().flex().flex_col().gap_2().children(session_rows))
 }
 
 fn status_color(status: &SessionStatus) -> gpui::Hsla {
     match status {
-        SessionStatus::Idle => hsla(0.0, 0.0, 0.6, 0.45),
-        SessionStatus::Thinking => hsla(0.53, 0.65, 0.55, 0.9),
-        SessionStatus::Executing { .. } => hsla(0.08, 0.75, 0.55, 0.9),
-        SessionStatus::WaitingInput { .. } => hsla(0.12, 0.85, 0.52, 0.85),
-        SessionStatus::Error { .. } => hsla(0.0, 0.7, 0.55, 0.9),
+        SessionStatus::Idle => hsla(0.0, 0.0, 0.0, 0.18),
+        SessionStatus::Thinking => theme::accent(),
+        SessionStatus::Executing { .. } => hsla(0.12, 0.85, 0.56, 0.9),
+        SessionStatus::WaitingInput { .. } => hsla(0.1, 0.9, 0.6, 0.9),
+        SessionStatus::Error { .. } => theme::danger(),
     }
 }

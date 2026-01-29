@@ -4,6 +4,7 @@ use gpui::{
 };
 
 use crate::app::{AuiApp, DiffDecision, DiffKey};
+use crate::ui::theme;
 
 pub fn diff_view(
     title: SharedString,
@@ -25,9 +26,9 @@ pub fn diff_view(
 
     div()
         .rounded_lg()
-        .bg(hsla(0.0, 0.0, 1.0, 0.9))
+        .bg(theme::surface_3())
         .border_1()
-        .border_color(hsla(0.0, 0.0, 0.0, 0.08))
+        .border_color(theme::border())
         .px(px(16.))
         .py(px(12.))
         .flex()
@@ -47,7 +48,7 @@ pub fn diff_view(
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(0x475569))
+                                .text_color(theme::muted_text())
                                 .child(title),
                         )
                         .child(
@@ -57,7 +58,7 @@ pub fn diff_view(
                                 .rounded_full()
                                 .bg(status.1)
                                 .text_xs()
-                                .text_color(rgb(0x0f172a))
+                                .text_color(theme::text())
                                 .child(status.0),
                         ),
                 )
@@ -127,21 +128,21 @@ fn button_style(active: bool, positive: bool) -> ButtonStyle {
     if active && positive {
         return ButtonStyle {
             bg: hsla(0.37, 0.6, 0.55, 0.25),
-            border: hsla(0.37, 0.6, 0.45, 0.45),
+            border: hsla(0.37, 0.6, 0.55, 0.45),
             text: rgb(0x065f46),
         };
     }
     if active && !positive {
         return ButtonStyle {
             bg: hsla(0.0, 0.7, 0.55, 0.22),
-            border: hsla(0.0, 0.7, 0.45, 0.45),
+            border: hsla(0.0, 0.7, 0.55, 0.45),
             text: rgb(0x7f1d1d),
         };
     }
     ButtonStyle {
         bg: hsla(0.0, 0.0, 1.0, 0.0),
-        border: hsla(0.0, 0.0, 0.0, 0.1),
-        text: rgb(0x475569),
+        border: theme::border(),
+        text: theme::muted_text(),
     }
 }
 
@@ -166,7 +167,7 @@ fn render_diff_lines(diff: &str) -> Vec<gpui::AnyElement> {
         lines.push(
             div()
                 .text_sm()
-                .text_color(rgb(0x64748b))
+                .text_color(theme::muted_text())
                 .child("No diff content.")
                 .into_any_element(),
         );
@@ -183,7 +184,7 @@ fn diff_line_style(line: &str) -> DiffLineStyle {
     if line.starts_with("+++ ") || line.starts_with("--- ") || line.starts_with("diff ") {
         return DiffLineStyle {
             bg: hsla(0.0, 0.0, 1.0, 0.0),
-            text: rgb(0x64748b),
+            text: theme::subtle_text(),
         };
     }
     if line.starts_with("@@") {
@@ -206,6 +207,6 @@ fn diff_line_style(line: &str) -> DiffLineStyle {
     }
     DiffLineStyle {
         bg: hsla(0.0, 0.0, 1.0, 0.0),
-        text: rgb(0x0f172a),
+        text: theme::text(),
     }
 }

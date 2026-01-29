@@ -78,6 +78,7 @@ pub struct Session {
     pub id: SessionId,
     pub title: SharedString,
     pub provider: ProviderInfo,
+    pub model: SharedString,
     pub status: SessionStatus,
     pub stats: SessionStats,
     pub messages: Vec<SessionMessage>,
@@ -146,6 +147,7 @@ impl SessionManager {
         &mut self,
         title: impl Into<SharedString>,
         provider: ProviderInfo,
+        model: impl Into<SharedString>,
     ) -> SessionId {
         let id = SessionId::new(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
@@ -153,6 +155,7 @@ impl SessionManager {
             id,
             title: title.into(),
             provider,
+            model: model.into(),
             status: SessionStatus::Idle,
             stats: SessionStats::new(),
             messages: Vec::new(),
@@ -235,7 +238,7 @@ mod tests {
     #[test]
     fn create_session_sets_active() {
         let mut manager = SessionManager::new();
-        let id = manager.create_session("alpha", sample_provider());
+        let id = manager.create_session("alpha", sample_provider(), "model-x");
         assert_eq!(manager.active_id(), Some(id));
         assert_eq!(manager.sessions().len(), 1);
     }
@@ -243,7 +246,7 @@ mod tests {
     #[test]
     fn push_message_returns_index() {
         let mut manager = SessionManager::new();
-        let id = manager.create_session("alpha", sample_provider());
+        let id = manager.create_session("alpha", sample_provider(), "model-x");
         let index = manager.push_message(id, SessionRole::User, "hello".to_string());
         assert_eq!(index, Some(0));
         let session = manager.session(id).expect("session missing");
@@ -254,7 +257,7 @@ mod tests {
     #[test]
     fn bump_usage_saturates_tokens() {
         let mut manager = SessionManager::new();
-        let id = manager.create_session("alpha", sample_provider());
+        let id = manager.create_session("alpha", sample_provider(), "model-x");
         manager.bump_usage(id, u32::MAX - 1, u32::MAX - 2, 0.0);
         manager.bump_usage(id, 10, 20, 1.5);
         let session = manager.session(id).expect("session missing");
@@ -266,8 +269,8 @@ mod tests {
     #[test]
     fn remove_session_updates_active() {
         let mut manager = SessionManager::new();
-        let first = manager.create_session("alpha", sample_provider());
-        let second = manager.create_session("beta", sample_provider());
+        let first = manager.create_session("alpha", sample_provider(), "model-x");
+        let second = manager.create_session("beta", sample_provider(), "model-y");
         assert_eq!(manager.active_id(), Some(second));
         assert!(manager.remove_session(second));
         assert_eq!(manager.active_id(), Some(first));

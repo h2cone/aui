@@ -1,4 +1,9 @@
 pub mod conversation;
 pub mod input_box;
+pub mod layout;
+pub mod settings_panel;
 pub mod sidebar;
+pub mod text;
+pub mod theme;
+pub mod top_bar;
 pub mod widgets;

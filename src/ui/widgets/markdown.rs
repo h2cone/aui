@@ -1,21 +1,21 @@
-use gpui::{
-    AnyElement, FontWeight, IntoElement, SharedString, div, hsla, prelude::*, px, rgb, white,
-};
+use gpui::{AnyElement, FontWeight, IntoElement, SharedString, div, prelude::*, px};
+
+use crate::ui::theme;
 
 pub fn markdown_block(content: SharedString) -> impl IntoElement {
     let blocks = render_markdown_blocks(content.as_ref());
     div()
         .rounded_lg()
-        .bg(white())
+        .bg(theme::surface_3())
         .border_1()
-        .border_color(hsla(0.0, 0.0, 0.0, 0.06))
+        .border_color(theme::border())
         .px(px(16.))
         .py(px(12.))
         .child(
             div()
                 .text_xs()
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(0x64748b))
+                .text_color(theme::subtle_text())
                 .child("Markdown"),
         )
         .child(div().flex().flex_col().gap_2().children(blocks))
@@ -37,7 +37,7 @@ fn render_markdown_blocks(content: &str) -> Vec<AnyElement> {
         rendered.push(
             div()
                 .text_sm()
-                .text_color(rgb(0x64748b))
+                .text_color(theme::muted_text())
                 .child("No markdown content.")
                 .into_any_element(),
         );
@@ -160,7 +160,7 @@ fn flush_quote_block(blocks: &mut Vec<MarkdownBlock>, quote_lines: &mut Vec<Stri
 fn render_paragraph(text: String) -> AnyElement {
     div()
         .text_sm()
-        .text_color(rgb(0x0f172a))
+        .text_color(theme::text())
         .child(text)
         .into_any_element()
 }
@@ -173,8 +173,8 @@ fn render_list(items: Vec<String>) -> AnyElement {
                 .flex()
                 .items_start()
                 .gap_2()
-                .child(div().text_sm().text_color(rgb(0x94a3b8)).child("-"))
-                .child(div().text_sm().text_color(rgb(0x0f172a)).child(item))
+                .child(div().text_sm().text_color(theme::subtle_text()).child("-"))
+                .child(div().text_sm().text_color(theme::text()).child(item))
                 .into_any_element(),
         );
     }
@@ -191,8 +191,8 @@ fn render_quote(text: String) -> AnyElement {
         .flex()
         .items_start()
         .gap_2()
-        .child(div().w(px(3.)).bg(hsla(0.52, 0.4, 0.6, 0.4)).rounded_full())
-        .child(div().text_sm().text_color(rgb(0x475569)).child(text))
+        .child(div().w(px(3.)).bg(theme::accent()).rounded_full())
+        .child(div().text_sm().text_color(theme::muted_text()).child(text))
         .into_any_element()
 }
 
@@ -205,7 +205,7 @@ fn render_heading(level: usize, text: String) -> AnyElement {
     div()
         .text_size(px(size))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(0x0b1220))
+        .text_color(theme::text())
         .child(text)
         .into_any_element()
 }

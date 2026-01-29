@@ -15,6 +15,7 @@ pub struct TextInput {
     pub focus_handle: FocusHandle,
     pub content: SharedString,
     pub placeholder: SharedString,
+    pub compact: bool,
     pub selected_range: Range<usize>,
     pub selection_reversed: bool,
     pub marked_range: Option<Range<usize>>,
@@ -36,6 +37,7 @@ impl TextInput {
             focus_handle: cx.focus_handle(),
             content: "".into(),
             placeholder: "Type to command the active agent.".into(),
+            compact: false,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -50,6 +52,13 @@ impl TextInput {
             history_index: None,
             history_draft: "".into(),
         }
+    }
+
+    pub fn new_compact(cx: &mut Context<Self>, placeholder: impl Into<SharedString>) -> Self {
+        let mut input = Self::new(cx);
+        input.compact = true;
+        input.placeholder = placeholder.into();
+        input
     }
 
     pub fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -511,36 +520,32 @@ impl EntityInputHandler for TextInput {
 
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui::{
-            BoxShadow, ColorSpace, div, hsla, linear_color_stop, linear_gradient, point, px, rgb,
-        };
+        use crate::ui::theme;
+        use gpui::{BoxShadow, div, hsla, point, px};
 
         self.tick_cursor(window);
         let is_focused = self.focus_handle.is_focused(window);
-        let glow_strength = if is_focused { 0.22 } else { 0.12 };
-        let border_alpha = if is_focused { 0.55 } else { 0.2 };
-
-        let input_bg = linear_gradient(
-            180.,
-            linear_color_stop(rgb(0xffffff), 0.0),
-            linear_color_stop(rgb(0xf1f6ff), 1.0),
-        )
-        .color_space(ColorSpace::Oklab);
-
-        let input_shadow = vec![
-            BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.12),
-                offset: point(px(0.), px(14.)),
-                blur_radius: px(30.),
-                spread_radius: px(-10.),
-            },
-            BoxShadow {
-                color: hsla(0.48, 0.65, 0.5, glow_strength),
+        let border_color = if is_focused {
+            theme::border_strong()
+        } else {
+            theme::border()
+        };
+        let shadow = if is_focused {
+            vec![BoxShadow {
+                color: hsla(0.55, 0.85, 0.62, 0.14),
                 offset: point(px(0.), px(6.)),
-                blur_radius: px(24.),
-                spread_radius: px(-8.),
-            },
-        ];
+                blur_radius: px(18.),
+                spread_radius: px(-10.),
+            }]
+        } else {
+            Vec::new()
+        };
+
+        let (line_height, text_size, padding_x, padding_y) = if self.compact {
+            (px(20.), px(13.), px(10.), px(6.))
+        } else {
+            (px(28.), px(18.), px(18.), px(12.))
+        };
 
         div()
             .flex()
@@ -568,19 +573,19 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .line_height(px(28.))
-            .text_size(px(18.))
+            .line_height(line_height)
+            .text_size(text_size)
             .font_weight(FontWeight::MEDIUM)
             .font_family("Cascadia Code")
-            .text_color(rgb(0x0f172a))
-            .bg(input_bg)
+            .text_color(theme::text())
+            .bg(theme::surface_3())
             .border_1()
-            .border_color(hsla(0.48, 0.65, 0.45, border_alpha))
+            .border_color(border_color)
             .rounded_xl()
-            .px(px(18.))
-            .py(px(12.))
-            .shadow(input_shadow)
-            .hover(|style| style.border_color(hsla(0.48, 0.65, 0.45, 0.4)))
+            .px(padding_x)
+            .py(padding_y)
+            .shadow(shadow)
+            .hover(|style| style.border_color(theme::border_strong()))
             .child(TextElement { input: cx.entity() })
     }
 }

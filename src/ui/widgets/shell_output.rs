@@ -1,9 +1,10 @@
 use gpui::{
     ClipboardItem, Context, CursorStyle, FontWeight, IntoElement, MouseButton, SharedString, div,
-    hsla, prelude::*, px, rgb,
+    hsla, prelude::*, px,
 };
 
 use crate::app::{AuiApp, ShellKey};
+use crate::ui::theme;
 
 pub fn shell_output(
     title: SharedString,
@@ -19,23 +20,23 @@ pub fn shell_output(
     let body = if collapsed {
         div()
             .text_sm()
-            .text_color(rgb(0x64748b))
+            .text_color(theme::muted_text())
             .child("Output hidden.")
             .into_any_element()
     } else {
         div()
             .font_family("Cascadia Mono")
             .text_size(px(13.))
-            .text_color(rgb(0x0f172a))
+            .text_color(theme::text())
             .child(output)
             .into_any_element()
     };
 
     div()
         .rounded_lg()
-        .bg(hsla(0.55, 0.24, 0.97, 0.38))
+        .bg(theme::surface_3())
         .border_1()
-        .border_color(hsla(0.0, 0.0, 0.0, 0.08))
+        .border_color(theme::border())
         .px(px(16.))
         .py(px(12.))
         .flex()
@@ -50,7 +51,7 @@ pub fn shell_output(
                     div()
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(0x475569))
+                        .text_color(theme::muted_text())
                         .child(title),
                 )
                 .child(
@@ -64,10 +65,10 @@ pub fn shell_output(
                                 .py(px(4.))
                                 .rounded_full()
                                 .border_1()
-                                .border_color(hsla(0.0, 0.0, 0.0, 0.12))
+                                .border_color(theme::border())
                                 .bg(hsla(0.0, 0.0, 1.0, 0.0))
                                 .text_xs()
-                                .text_color(rgb(0x475569))
+                                .text_color(theme::muted_text())
                                 .cursor(CursorStyle::PointingHand)
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -85,10 +86,10 @@ pub fn shell_output(
                                 .py(px(4.))
                                 .rounded_full()
                                 .border_1()
-                                .border_color(hsla(0.0, 0.0, 0.0, 0.12))
+                                .border_color(theme::border())
                                 .bg(hsla(0.0, 0.0, 1.0, 0.0))
                                 .text_xs()
-                                .text_color(rgb(0x475569))
+                                .text_color(theme::muted_text())
                                 .cursor(CursorStyle::PointingHand)
                                 .on_mouse_down(
                                     MouseButton::Left,

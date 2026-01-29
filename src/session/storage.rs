@@ -20,6 +20,7 @@ pub struct StoredSession {
     pub title: String,
     pub provider_id: String,
     pub provider_name: String,
+    pub provider_model: Option<String>,
     pub messages: Vec<SessionMessage>,
 }
 
@@ -107,6 +108,7 @@ impl SessionStorage {
                 title: meta.title,
                 provider_id: meta.provider_id,
                 provider_name: meta.provider_name,
+                provider_model: meta.provider_model,
                 messages,
             });
         }
@@ -159,6 +161,7 @@ impl SessionStorage {
             title: session.title.as_ref(),
             provider_id: session.provider.id.as_ref(),
             provider_name: session.provider.name.as_ref(),
+            provider_model: session.model.as_ref(),
         };
         let data = serde_json::to_vec(&payload)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
@@ -197,6 +200,7 @@ struct Meta {
     provider_id: String,
     #[serde(alias = "agent_name")]
     provider_name: String,
+    provider_model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -205,6 +209,7 @@ struct MetaWrite<'a> {
     title: &'a str,
     provider_id: &'a str,
     provider_name: &'a str,
+    provider_model: &'a str,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -264,6 +269,7 @@ mod tests {
             id: SessionId::new(id),
             title: SharedString::from("alpha"),
             provider: ProviderInfo::new("test", "Test Provider", ProviderKind::Anthropic),
+            model: SharedString::from("model-x"),
             status: SessionStatus::Idle,
             stats: SessionStats::new(),
             messages: vec![
@@ -304,6 +310,7 @@ mod tests {
         assert_eq!(stored.title, session.title.as_ref());
         assert_eq!(stored.provider_id, session.provider.id.as_ref());
         assert_eq!(stored.provider_name, session.provider.name.as_ref());
+        assert_eq!(stored.provider_model, Some("model-x".to_string()));
         assert_eq!(stored.messages.len(), session.messages.len());
         assert_eq!(stored.messages[0].content, "hello");
         let ts = stored.messages[0]

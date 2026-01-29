@@ -77,7 +77,6 @@ impl ProviderClient for RustProvider {
             let result = match info.kind {
                 ProviderKind::Anthropic => send_claude_stream(&info, &message, &events_tx),
                 ProviderKind::OpenAI => send_openai_stream(&info, &message, &events_tx),
-                ProviderKind::OpenCode => send_opencode_stream(&info, &message, &events_tx),
                 ProviderKind::Google => send_gemini_request(&info, &message, &events_tx),
             };
             if let Err(err) = result {
@@ -108,11 +107,8 @@ fn send_openai_stream(
     message: &UserMessage,
     tx: &mpsc::Sender<ProviderEvent>,
 ) -> Result<(), String> {
-    let OpenAiConfig {
-        api_key,
-        base_url,
-        model,
-    } = openai_config(info)?;
+    let OpenAiConfig { api_key, base_url } = openai_config(info)?;
+    let model = message.model.as_str();
     let client = build_http_client()?;
     let prompt = build_prompt(message)?;
     let request_body = serde_json::json!({
@@ -216,14 +212,6 @@ fn send_openai_stream(
     })
 }
 
-fn send_opencode_stream(
-    info: &ProviderInfo,
-    message: &UserMessage,
-    tx: &mpsc::Sender<ProviderEvent>,
-) -> Result<(), String> {
-    send_openai_stream(info, message, tx)
-}
-
 fn send_claude_stream(
     _info: &ProviderInfo,
     message: &UserMessage,
@@ -231,12 +219,10 @@ fn send_claude_stream(
 ) -> Result<(), String> {
     let api_key =
         env::var("ANTHROPIC_API_KEY").map_err(|_| "Missing ANTHROPIC_API_KEY".to_string())?;
-    let model =
-        env::var("AUI_CLAUDE_MODEL").unwrap_or_else(|_| "claude-3-5-sonnet-20241022".into());
-    let max_tokens = parse_u32_env("AUI_CLAUDE_MAX_TOKENS", 1024);
-    let base_url = env::var("AUI_CLAUDE_BASE_URL")
+    let model = message.model.as_str();
+    let max_tokens = parse_u32_env("ANTHROPIC_MAX_TOKENS", 1024);
+    let base_url = env::var("ANTHROPIC_BASE_URL")
         .ok()
-        .or_else(|| env::var("ANTHROPIC_BASE_URL").ok())
         .unwrap_or_else(|| "https://api.anthropic.com".to_string());
 
     let request_body = serde_json::json!({
@@ -343,11 +329,11 @@ fn send_gemini_request(
         .ok()
         .or_else(|| env::var("GOOGLE_API_KEY").ok())
         .ok_or_else(|| "Missing GEMINI_API_KEY or GOOGLE_API_KEY".to_string())?;
-    let model = env::var("AUI_GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-pro".into());
-    let base_url = env::var("AUI_GEMINI_BASE_URL")
+    let model = message.model.as_str();
+    let base_url = env::var("GEMINI_BASE_URL")
         .ok()
         .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string());
-    let api_version = env::var("AUI_GEMINI_API_VERSION").unwrap_or_else(|_| "v1beta".into());
+    let api_version = env::var("GEMINI_API_VERSION").unwrap_or_else(|_| "v1beta".into());
     let prompt = build_prompt(message)?;
 
     let url = format!(
@@ -413,7 +399,6 @@ fn send_gemini_request(
 struct OpenAiConfig {
     api_key: String,
     base_url: String,
-    model: String,
 }
 
 fn openai_config(info: &ProviderInfo) -> Result<OpenAiConfig, String> {
@@ -423,27 +408,9 @@ fn openai_config(info: &ProviderInfo) -> Result<OpenAiConfig, String> {
                 env::var("OPENAI_API_KEY").map_err(|_| "Missing OPENAI_API_KEY".to_string())?;
             let base_url =
                 env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
-            let model = env::var("AUI_CODEX_MODEL")
-                .ok()
-                .or_else(|| env::var("OPENAI_MODEL").ok())
-                .unwrap_or_else(|| "gpt-4o-mini".to_string());
             Ok(OpenAiConfig {
                 api_key,
                 base_url: base_url.trim_end_matches('/').to_string(),
-                model,
-            })
-        }
-        ProviderKind::OpenCode => {
-            let api_key =
-                env::var("OPENCODE_API_KEY").map_err(|_| "Missing OPENCODE_API_KEY".to_string())?;
-            let base_url = env::var("OPENCODE_BASE_URL")
-                .map_err(|_| "Missing OPENCODE_BASE_URL".to_string())?;
-            let model =
-                env::var("AUI_OPENCODE_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
-            Ok(OpenAiConfig {
-                api_key,
-                base_url: base_url.trim_end_matches('/').to_string(),
-                model,
             })
         }
         _ => Err(format!(

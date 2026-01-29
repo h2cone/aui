@@ -1,9 +1,8 @@
-use gpui::{
-    BoxShadow, FontWeight, IntoElement, SharedString, div, hsla, prelude::*, px, rgb, white,
-};
+use gpui::{FontWeight, IntoElement, SharedString, div, hsla, prelude::*, px};
 
 use crate::app::{AuiApp, DiffKey};
 use crate::session::{Session, SessionRole};
+use crate::ui::theme;
 use crate::ui::widgets::code_block::code_block;
 use crate::ui::widgets::diff_view::diff_view;
 use crate::ui::widgets::markdown::markdown_block;
@@ -37,7 +36,7 @@ pub fn render_conversation(
                 body_children.push(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x5b6777))
+                        .text_color(theme::muted_text())
                         .child("...")
                         .into_any_element(),
                 );
@@ -50,14 +49,10 @@ pub fn render_conversation(
                     .gap_2()
                     .rounded_xl()
                     .bg(bubble_bg)
-                    .px(px(16.))
-                    .py(px(12.))
-                    .shadow(vec![BoxShadow {
-                        color: hsla(0.0, 0.0, 0.0, 0.08),
-                        offset: gpui::point(px(0.), px(10.)),
-                        blur_radius: px(24.),
-                        spread_radius: px(-12.),
-                    }])
+                    .border_1()
+                    .border_color(theme::border())
+                    .px(px(14.))
+                    .py(px(10.))
                     .child(
                         div()
                             .text_xs()
@@ -75,15 +70,15 @@ pub fn render_conversation(
         message_items.push(
             div()
                 .rounded_xl()
-                .bg(white())
+                .bg(theme::surface_2())
                 .border_1()
-                .border_color(hsla(0.0, 0.0, 0.0, 0.06))
+                .border_color(theme::border())
                 .px(px(18.))
                 .py(px(16.))
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(0x5b6777))
+                        .text_color(theme::muted_text())
                         .child("Start a session to see the conversation."),
                 )
                 .into_any_element(),
@@ -213,9 +208,9 @@ fn flush_code_block(blocks: &mut Vec<MessageBlock>, language: &mut String, buffe
 
 fn style_for_role(role: &SessionRole) -> (&'static str, gpui::Hsla, gpui::Rgba) {
     match role {
-        SessionRole::User => ("You", hsla(0.55, 0.4, 0.95, 0.32), rgb(0x0b1220)),
-        SessionRole::Assistant => ("Agent", hsla(0.14, 0.6, 0.92, 0.32), rgb(0x0f172a)),
-        SessionRole::Tool => ("Tool", hsla(0.0, 0.0, 0.9, 0.28), rgb(0x1f2937)),
+        SessionRole::User => ("You", hsla(0.55, 0.75, 0.6, 0.12), theme::text()),
+        SessionRole::Assistant => ("Agent", hsla(0.0, 0.0, 1.0, 0.06), theme::text()),
+        SessionRole::Tool => ("Tool", hsla(0.22, 0.6, 0.6, 0.1), theme::text()),
     }
 }
 

@@ -24,12 +24,11 @@ impl ProviderInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     Anthropic,
     OpenAI,
     Google,
-    OpenCode,
 }
 
 impl ProviderKind {
@@ -38,7 +37,23 @@ impl ProviderKind {
             ProviderKind::Anthropic => "Anthropic",
             ProviderKind::OpenAI => "OpenAI",
             ProviderKind::Google => "Google",
-            ProviderKind::OpenCode => "OpenCode",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenAI => "openai",
+            ProviderKind::Google => "gemini",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key.trim().to_ascii_lowercase().as_str() {
+            "anthropic" => Some(ProviderKind::Anthropic),
+            "openai" => Some(ProviderKind::OpenAI),
+            "gemini" | "google" => Some(ProviderKind::Google),
+            _ => None,
         }
     }
 }
@@ -55,6 +70,7 @@ pub struct UserMessage {
     pub text: String,
     pub attachments: Vec<Attachment>,
     pub context: Option<WorkingContext>,
+    pub model: String,
 }
 
 #[derive(Clone, Debug)]
