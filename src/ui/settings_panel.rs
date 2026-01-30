@@ -3,8 +3,8 @@ use gpui::{
     prelude::*, px,
 };
 
-use crate::agent::ProviderKind;
 use crate::app::AuiApp;
+use crate::providers::ProviderKind;
 use crate::session::Session;
 use crate::ui::text;
 use crate::ui::theme;

@@ -260,7 +260,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::agent::{ProviderInfo, ProviderKind, SessionStatus};
+    use crate::providers::{ProviderInfo, ProviderKind, SessionStatus};
     use crate::session::{Session, SessionMessage, SessionRole, SessionStats};
 
     fn sample_session(id: u64) -> Session {

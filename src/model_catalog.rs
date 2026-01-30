@@ -8,9 +8,9 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::ProviderKind;
 use crate::config;
 use crate::logger;
+use crate::providers::ProviderKind;
 
 const CACHE_FILE: &str = "models.json";
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60 * 6);
@@ -140,7 +140,7 @@ pub fn fetch_models(kind: ProviderKind) -> Result<Vec<String>, String> {
     match kind {
         ProviderKind::Anthropic => fetch_anthropic_models(),
         ProviderKind::OpenAI => fetch_openai_models(),
-        ProviderKind::Google => fetch_gemini_models(),
+        ProviderKind::Gemini => fetch_gemini_models(),
     }
 }
 

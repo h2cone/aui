@@ -12,7 +12,7 @@ impl Config {
     pub fn load() -> Self {
         let path = config_dir().join("config.toml");
         let mut debug = false;
-        let mut default_provider_id = "claude-code".to_string();
+        let mut default_provider_id = "anthropic".to_string();
         if let Ok(contents) = fs::read_to_string(path) {
             // Backward compatible with older configs.
             if let Some(value) = parse_value(&contents, "default_provider_id")

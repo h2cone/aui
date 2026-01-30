@@ -3,8 +3,8 @@ use gpui::{
     prelude::*, px,
 };
 
-use crate::agent::SessionStatus;
 use crate::app::AuiApp;
+use crate::providers::SessionStatus;
 use crate::ui::theme;
 
 pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoElement {

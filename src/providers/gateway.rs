@@ -8,21 +8,21 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::agent::{
+use crate::logger;
+use crate::providers::{
     ProviderClient, ProviderEvent, ProviderInfo, ProviderKind, ProviderStream, SessionStatus,
     UserMessage,
 };
-use crate::logger;
 
-pub struct BridgeClient {
+pub struct ProviderGateway {
     providers: Vec<ProviderInfo>,
 }
 
-impl BridgeClient {
+impl ProviderGateway {
     pub fn new() -> Self {
-        let providers = crate::agent::adapters::available_providers();
+        let providers = crate::providers::registry::available_providers();
         logger::debug(&format!(
-            "bridge client init providers={} transport=rust",
+            "provider gateway init providers={} transport=rust",
             providers.len()
         ));
         Self { providers }
@@ -33,9 +33,10 @@ impl BridgeClient {
     }
 
     pub fn provider_by_id(&self, id: &str) -> Option<ProviderInfo> {
+        let id = crate::providers::registry::canonicalize_provider_id(id);
         self.providers
             .iter()
-            .find(|provider| provider.id.as_ref() == id)
+            .find(|provider| provider.id.as_ref() == id.as_ref())
             .cloned()
     }
 
@@ -75,9 +76,9 @@ impl ProviderClient for RustProvider {
         let info = self.info.clone();
         thread::spawn(move || {
             let result = match info.kind {
-                ProviderKind::Anthropic => send_claude_stream(&info, &message, &events_tx),
+                ProviderKind::Anthropic => send_anthropic_stream(&info, &message, &events_tx),
                 ProviderKind::OpenAI => send_openai_stream(&info, &message, &events_tx),
-                ProviderKind::Google => send_gemini_request(&info, &message, &events_tx),
+                ProviderKind::Gemini => send_gemini_request(&info, &message, &events_tx),
             };
             if let Err(err) = result {
                 let _ = events_tx.send(ProviderEvent::Error(err));
@@ -212,7 +213,7 @@ fn send_openai_stream(
     })
 }
 
-fn send_claude_stream(
+fn send_anthropic_stream(
     _info: &ProviderInfo,
     message: &UserMessage,
     tx: &mpsc::Sender<ProviderEvent>,
@@ -240,13 +241,13 @@ fn send_claude_stream(
         .header("accept", "text/event-stream")
         .json(&request_body)
         .send()
-        .map_err(|err| format!("Claude request failed: {err}"))?;
+        .map_err(|err| format!("Anthropic request failed: {err}"))?;
 
     let response = ensure_success(response)?;
     let mut input_tokens: Option<u32> = None;
     parse_sse_stream_with_event(response, |event, data| {
         let payload: Value = serde_json::from_str(data)
-            .map_err(|err| format!("Claude stream decode failed: {err}"))?;
+            .map_err(|err| format!("Anthropic stream decode failed: {err}"))?;
         match event {
             "message_start" => {
                 if let Some(value) = payload
@@ -307,7 +308,7 @@ fn send_claude_stream(
                 let message = payload
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("Claude stream error")
+                    .unwrap_or("Anthropic stream error")
                     .to_string();
                 let _ = tx.send(ProviderEvent::Error(message));
                 return Ok(true);

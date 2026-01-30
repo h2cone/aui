@@ -1,6 +1,4 @@
 mod actions;
-#[allow(dead_code)]
-mod agent;
 mod app;
 #[allow(dead_code)]
 mod config;
@@ -8,6 +6,8 @@ mod config;
 mod logger;
 #[allow(dead_code)]
 mod model_catalog;
+#[allow(dead_code)]
+mod providers;
 #[allow(dead_code)]
 mod session;
 mod text_element;

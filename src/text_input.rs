@@ -36,7 +36,7 @@ impl TextInput {
         Self {
             focus_handle: cx.focus_handle(),
             content: "".into(),
-            placeholder: "Type to command the active agent.".into(),
+            placeholder: "Type a message to the assistant.".into(),
             compact: false,
             selected_range: 0..0,
             selection_reversed: false,

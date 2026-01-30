@@ -11,14 +11,14 @@ use gpui::{
 };
 
 use crate::actions::{AttachFiles, ClearAttachments, ExportSession, Submit};
-use crate::agent::bridge::BridgeClient;
-use crate::agent::{
-    Attachment, ProviderEvent, ProviderInfo, ProviderKind, SessionStatus, UserMessage,
-    WorkingContext,
-};
 use crate::config;
 use crate::logger;
 use crate::model_catalog::{ModelCatalog, fetch_models, now_epoch_secs, should_refresh};
+use crate::providers::gateway::ProviderGateway;
+use crate::providers::{
+    Attachment, ProviderEvent, ProviderInfo, ProviderKind, SessionStatus, UserMessage,
+    WorkingContext,
+};
 use crate::session::{
     Session, SessionId, SessionManager, SessionRole, SessionStorage, StoredDiffDecision,
     StoredSession,
@@ -30,7 +30,7 @@ pub struct AuiApp {
     pub text_input: Entity<TextInput>,
     pub model_input: Entity<TextInput>,
     sessions: SessionManager,
-    bridge: BridgeClient,
+    gateway: ProviderGateway,
     attachments: Vec<Attachment>,
     new_session_provider_id: Arc<str>,
     storage: SessionStorage,
@@ -93,7 +93,7 @@ impl AuiApp {
         logger::info("app init");
         let text_input = cx.new(|cx| TextInput::new(cx));
         let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model name…"));
-        let bridge = BridgeClient::new();
+        let gateway = ProviderGateway::new();
         let config = config::Config::load();
         let storage = SessionStorage::new();
         let model_catalog = ModelCatalog::load();
@@ -101,7 +101,7 @@ impl AuiApp {
             cx,
             text_input,
             model_input,
-            bridge,
+            gateway,
             config,
             storage,
             model_catalog,
@@ -113,7 +113,7 @@ impl AuiApp {
         cx: &mut Context<Self>,
         text_input: Entity<TextInput>,
         model_input: Entity<TextInput>,
-        bridge: BridgeClient,
+        gateway: ProviderGateway,
         config: config::Config,
         storage: SessionStorage,
         model_catalog: ModelCatalog,
@@ -122,7 +122,7 @@ impl AuiApp {
         let mut sessions = SessionManager::new();
         let conversation_scroll = ScrollHandle::new();
         logger::debug("restoring sessions");
-        restore_sessions(&bridge, &storage, &mut sessions, &model_catalog);
+        restore_sessions(&gateway, &storage, &mut sessions, &model_catalog);
         if sessions.sessions().is_empty() {
             logger::debug("no sessions restored");
         }
@@ -160,16 +160,16 @@ impl AuiApp {
             }
         }
 
-        let new_session_provider_id = bridge
+        let new_session_provider_id = gateway
             .provider_by_id(config.default_provider_id.as_str())
             .map(|provider| provider.id)
-            .unwrap_or_else(|| "claude-code".into());
+            .unwrap_or_else(|| "anthropic".into());
 
         let mut app = Self {
             text_input,
             model_input,
             sessions,
-            bridge,
+            gateway,
             attachments: Vec::new(),
             new_session_provider_id,
             storage,
@@ -251,9 +251,9 @@ impl AuiApp {
         let next = self.sessions.sessions().len() + 1;
         let title = format!("session-{}", next);
         let provider = self
-            .bridge
+            .gateway
             .provider_by_id(self.new_session_provider_id.as_ref())
-            .unwrap_or_else(|| select_provider(&self.bridge, ProviderKind::Anthropic));
+            .unwrap_or_else(|| select_provider(&self.gateway, ProviderKind::Anthropic));
         let model = default_model_for(&self.model_catalog, provider.kind);
         let id = self.sessions.create_session(title, provider, model);
         if let Some(session) = self.sessions.session(id) {
@@ -278,14 +278,14 @@ impl AuiApp {
     }
 
     pub fn new_session_provider_label(&self) -> SharedString {
-        self.bridge
+        self.gateway
             .provider_by_id(self.new_session_provider_id.as_ref())
             .map(|provider| SharedString::from(provider.name.clone()))
             .unwrap_or_else(|| SharedString::from("Anthropic"))
     }
 
     pub fn cycle_new_session_provider(&mut self, cx: &mut Context<Self>) {
-        let providers = self.bridge.providers();
+        let providers = self.gateway.providers();
         if providers.is_empty() {
             return;
         }
@@ -299,7 +299,7 @@ impl AuiApp {
     }
 
     pub fn cycle_session_provider(&mut self, id: SessionId, cx: &mut Context<Self>) {
-        let providers = self.bridge.providers();
+        let providers = self.gateway.providers();
         let Some(session) = self.sessions.session_mut(id) else {
             return;
         };
@@ -445,7 +445,7 @@ impl AuiApp {
         let providers = [
             ProviderKind::Anthropic,
             ProviderKind::OpenAI,
-            ProviderKind::Google,
+            ProviderKind::Gemini,
         ];
 
         for kind in providers {
@@ -562,17 +562,17 @@ impl AuiApp {
             .session(active_id)
             .map(|session| (session.provider.clone(), session.model.clone()))
             .unwrap_or_else(|| {
-                let provider = select_provider(&self.bridge, ProviderKind::Anthropic);
+                let provider = select_provider(&self.gateway, ProviderKind::Anthropic);
                 let model = default_model_for(&self.model_catalog, provider.kind);
                 (provider, model)
             });
         logger::debug(&format!(
-            "bridge send session={} provider={}",
+            "provider send session={} provider={}",
             active_id.value(),
             provider.id.as_ref()
         ));
         let attachments = std::mem::take(&mut self.attachments);
-        let stream = self.bridge.connect(&provider).send(UserMessage {
+        let stream = self.gateway.connect(&provider).send(UserMessage {
             text: user_text,
             attachments,
             context: Some(WorkingContext {
@@ -1019,13 +1019,13 @@ fn cost_rates_for(kind: ProviderKind) -> (f32, f32) {
     let (default_in, default_out) = match kind {
         ProviderKind::Anthropic => (0.0, 0.0),
         ProviderKind::OpenAI => (0.0, 0.0),
-        ProviderKind::Google => (0.0, 0.0),
+        ProviderKind::Gemini => (0.0, 0.0),
     };
 
     let prefix = match kind {
         ProviderKind::Anthropic => "ANTHROPIC",
         ProviderKind::OpenAI => "OPENAI",
-        ProviderKind::Google => "GEMINI",
+        ProviderKind::Gemini => "GEMINI",
     };
 
     let in_key = format!("{prefix}_COST_IN_PER_MILLION");
@@ -1067,7 +1067,7 @@ pub(crate) fn model_options_for(catalog: &ModelCatalog, kind: ProviderKind) -> V
             "claude-3-opus-20240229",
         ],
         ProviderKind::OpenAI => vec!["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
-        ProviderKind::Google => vec![
+        ProviderKind::Gemini => vec![
             "gemini-3-pro-preview",
             "gemini-2.5-pro",
             "gemini-2.5-flash",
@@ -1505,7 +1505,7 @@ fn render_settings_panel(
 }
 
 fn restore_sessions(
-    bridge: &BridgeClient,
+    gateway: &ProviderGateway,
     storage: &SessionStorage,
     sessions: &mut SessionManager,
     model_catalog: &ModelCatalog,
@@ -1526,7 +1526,7 @@ fn restore_sessions(
             stored.provider_id.as_str(),
             stored.messages.len()
         ));
-        let provider = resolve_stored_provider(bridge, &stored);
+        let provider = resolve_stored_provider(gateway, &stored);
         let model = stored
             .provider_model
             .as_ref()
@@ -1547,38 +1547,40 @@ fn restore_sessions(
     }
 }
 
-fn select_provider(bridge: &BridgeClient, kind: ProviderKind) -> ProviderInfo {
-    bridge
+fn select_provider(gateway: &ProviderGateway, kind: ProviderKind) -> ProviderInfo {
+    gateway
         .providers()
         .iter()
         .find(|provider| provider.kind == kind)
         .cloned()
-        .unwrap_or_else(|| ProviderInfo::new("claude-code", "Anthropic", ProviderKind::Anthropic))
+        .unwrap_or_else(|| {
+            ProviderInfo::new("anthropic", "Anthropic (Claude)", ProviderKind::Anthropic)
+        })
 }
 
-fn resolve_stored_provider(bridge: &BridgeClient, stored: &StoredSession) -> ProviderInfo {
-    if let Some(provider) = bridge.provider_by_id(&stored.provider_id) {
+fn resolve_stored_provider(gateway: &ProviderGateway, stored: &StoredSession) -> ProviderInfo {
+    if let Some(provider) = gateway.provider_by_id(&stored.provider_id) {
         return provider;
     }
     // If the stored provider no longer exists (e.g. removed), fall back to a supported one.
-    select_provider(bridge, ProviderKind::Anthropic)
+    select_provider(gateway, ProviderKind::Anthropic)
 }
 
 fn friendly_error_message(raw: &str) -> SharedString {
     let message = raw.to_ascii_lowercase();
     if message.contains("missing") && message.contains("api_key") {
-        return SharedString::from("Agent credentials are not configured.");
+        return SharedString::from("Provider credentials are not configured.");
     }
     if message.contains("unauthorized") || message.contains("401") || message.contains("403") {
-        return SharedString::from("Agent authentication failed.");
+        return SharedString::from("Provider authentication failed.");
     }
     if message.contains("timeout") {
-        return SharedString::from("Agent request timed out.");
+        return SharedString::from("Provider request timed out.");
     }
     if message.contains("http") {
-        return SharedString::from("Agent request failed. Check your network or settings.");
+        return SharedString::from("Provider request failed. Check your network or settings.");
     }
-    SharedString::from("Agent error. Check logs for details.")
+    SharedString::from("Provider error. Check logs for details.")
 }
 
 fn is_model_unavailable(raw: &str) -> bool {
@@ -1600,7 +1602,7 @@ fn friendly_model_refresh_error(kind: ProviderKind, raw: &str) -> String {
         let var = match kind {
             ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
             ProviderKind::OpenAI => "OPENAI_API_KEY",
-            ProviderKind::Google => "GEMINI_API_KEY or GOOGLE_API_KEY",
+            ProviderKind::Gemini => "GEMINI_API_KEY or GOOGLE_API_KEY",
         };
         return format!("Configure {var} to refresh models.");
     }
@@ -1657,7 +1659,7 @@ mod tests {
         for kind in [
             ProviderKind::Anthropic,
             ProviderKind::OpenAI,
-            ProviderKind::Google,
+            ProviderKind::Gemini,
         ] {
             catalog.set_models(kind, Vec::new(), now);
         }
@@ -1669,7 +1671,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let storage = SessionStorage::with_root(dir.path().join("sessions"));
         let config = config::Config {
-            default_provider_id: "claude-code".to_string(),
+            default_provider_id: "anthropic".to_string(),
             debug: false,
         };
         let catalog = seeded_model_catalog();
@@ -1677,12 +1679,12 @@ mod tests {
         let (app, cx) = cx.add_window_view(|_, cx| {
             let text_input = cx.new(|cx| TextInput::new(cx));
             let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model"));
-            let bridge = BridgeClient::new();
+            let gateway = ProviderGateway::new();
             AuiApp::new_with(
                 cx,
                 text_input,
                 model_input,
-                bridge,
+                gateway,
                 config.clone(),
                 storage.clone(),
                 catalog.clone(),
@@ -1700,7 +1702,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let storage = SessionStorage::with_root(dir.path().join("sessions"));
         let config = config::Config {
-            default_provider_id: "claude-code".to_string(),
+            default_provider_id: "anthropic".to_string(),
             debug: false,
         };
         let catalog = seeded_model_catalog();
@@ -1708,12 +1710,12 @@ mod tests {
         let (app, cx) = cx.add_window_view(|_, cx| {
             let text_input = cx.new(|cx| TextInput::new(cx));
             let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model"));
-            let bridge = BridgeClient::new();
+            let gateway = ProviderGateway::new();
             AuiApp::new_with(
                 cx,
                 text_input,
                 model_input,
-                bridge,
+                gateway,
                 config.clone(),
                 storage.clone(),
                 catalog.clone(),
@@ -1732,7 +1734,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let storage = SessionStorage::with_root(dir.path().join("sessions"));
         let config = config::Config {
-            default_provider_id: "claude-code".to_string(),
+            default_provider_id: "anthropic".to_string(),
             debug: false,
         };
         let catalog = seeded_model_catalog();
@@ -1740,12 +1742,12 @@ mod tests {
         let (app, cx) = cx.add_window_view(|_, cx| {
             let text_input = cx.new(|cx| TextInput::new(cx));
             let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model"));
-            let bridge = BridgeClient::new();
+            let gateway = ProviderGateway::new();
             AuiApp::new_with(
                 cx,
                 text_input,
                 model_input,
-                bridge,
+                gateway,
                 config.clone(),
                 storage.clone(),
                 catalog.clone(),

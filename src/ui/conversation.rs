@@ -209,7 +209,7 @@ fn flush_code_block(blocks: &mut Vec<MessageBlock>, language: &mut String, buffe
 fn style_for_role(role: &SessionRole) -> (&'static str, gpui::Hsla, gpui::Rgba) {
     match role {
         SessionRole::User => ("You", hsla(0.55, 0.75, 0.6, 0.12), theme::text()),
-        SessionRole::Assistant => ("Agent", hsla(0.0, 0.0, 1.0, 0.06), theme::text()),
+        SessionRole::Assistant => ("Assistant", hsla(0.0, 0.0, 1.0, 0.06), theme::text()),
         SessionRole::Tool => ("Tool", hsla(0.22, 0.6, 0.6, 0.1), theme::text()),
     }
 }

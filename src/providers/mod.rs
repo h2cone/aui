@@ -4,8 +4,8 @@ use std::sync::mpsc::Receiver;
 
 use gpui::SharedString;
 
-pub mod adapters;
-pub mod bridge;
+pub mod gateway;
+pub mod registry;
 
 #[derive(Clone, Debug)]
 pub struct ProviderInfo {
@@ -28,7 +28,7 @@ impl ProviderInfo {
 pub enum ProviderKind {
     Anthropic,
     OpenAI,
-    Google,
+    Gemini,
 }
 
 impl ProviderKind {
@@ -36,7 +36,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Anthropic => "Anthropic",
             ProviderKind::OpenAI => "OpenAI",
-            ProviderKind::Google => "Google",
+            ProviderKind::Gemini => "Google Gemini",
         }
     }
 
@@ -44,7 +44,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAI => "openai",
-            ProviderKind::Google => "gemini",
+            ProviderKind::Gemini => "gemini",
         }
     }
 
@@ -52,7 +52,7 @@ impl ProviderKind {
         match key.trim().to_ascii_lowercase().as_str() {
             "anthropic" => Some(ProviderKind::Anthropic),
             "openai" => Some(ProviderKind::OpenAI),
-            "gemini" | "google" => Some(ProviderKind::Google),
+            "gemini" | "google" | "google-gemini" | "google_gemini" => Some(ProviderKind::Gemini),
             _ => None,
         }
     }

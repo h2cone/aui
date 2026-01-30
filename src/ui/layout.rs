@@ -1,7 +1,7 @@
 use gpui::{Context, IntoElement, Window, div, prelude::*, px};
 
-use crate::agent::SessionStatus;
 use crate::app::AuiApp;
+use crate::providers::SessionStatus;
 use crate::ui::{conversation, input_box, settings_panel, sidebar, theme, top_bar};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
