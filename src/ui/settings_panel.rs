@@ -203,9 +203,8 @@ fn render_model_rows(
         options.len().min(list_limit)
     };
     for model in options.iter().take(limit) {
-        let model_value = model.as_ref().to_string();
-        let label = text::ellipsize(&model_value, 56);
-        let model_for_click = model_value.clone();
+        let label = text::ellipsize(model.as_ref(), 56);
+        let model_for_click = model.clone();
         out.push(
             div()
                 .flex()
@@ -238,7 +237,7 @@ fn render_model_rows(
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, _, _, cx| {
-                                view.set_session_model(session_id, &model_for_click, cx);
+                                view.set_session_model(session_id, model_for_click.as_ref(), cx);
                             }),
                         )
                         .child("Use"),

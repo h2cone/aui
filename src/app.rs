@@ -21,8 +21,8 @@ use crate::providers::{
     WorkingContext,
 };
 use crate::session::{
-    Session, SessionId, SessionManager, SessionRole, SessionStorage, StoredDiffDecision,
-    StoredSession,
+    Session, SessionContent, SessionId, SessionManager, SessionRole, SessionStorage,
+    StoredDiffDecision, StoredSession,
 };
 use crate::text_input::TextInput;
 use crate::ui;
@@ -401,7 +401,7 @@ impl AuiApp {
                 .unwrap_or("unknown")
         ));
         self.sessions
-            .append_message(id, SessionRole::Assistant, "New session ready.".to_string());
+            .append_message(id, SessionRole::Assistant, "New session ready.");
         self.persist_sessions_immediate([id]);
         self.conversation_scroll.scroll_to_bottom();
         cx.notify();
@@ -665,19 +665,21 @@ impl AuiApp {
             return;
         };
 
-        let user_text = message.to_string();
+        let user_text_len = message.as_ref().len();
         logger::debug(&format!(
             "submit message session={} len={} attachments={}",
             active_id.value(),
-            user_text.len(),
+            user_text_len,
             self.attachments.len()
         ));
         self.sessions
-            .append_message(active_id, SessionRole::User, user_text.clone());
+            .append_message(active_id, SessionRole::User, message.clone());
 
-        let assistant_index =
-            self.sessions
-                .push_message(active_id, SessionRole::Assistant, String::new());
+        let assistant_index = self.sessions.push_message(
+            active_id,
+            SessionRole::Assistant,
+            SessionContent::streaming(""),
+        );
         if let Some(index) = assistant_index {
             self.stream_targets.insert(active_id, index);
         }
@@ -703,12 +705,12 @@ impl AuiApp {
         ));
         let attachments = std::mem::take(&mut self.attachments);
         let stream = self.gateway.connect(&provider).send(UserMessage {
-            text: user_text,
+            text: message,
             attachments,
             context: Some(WorkingContext {
                 cwd: std::env::current_dir().ok(),
             }),
-            model: model.as_ref().to_string(),
+            model,
         });
 
         let handle = cx.entity().downgrade();
@@ -830,7 +832,13 @@ impl AuiApp {
             }
             ProviderEvent::Done => {
                 logger::debug(&format!("stream done session={}", id.value()));
-                self.stream_targets.remove(&id);
+                if let Some(index) = self.stream_targets.remove(&id) {
+                    if let Some(session) = self.sessions.session_mut(id) {
+                        if let Some(message) = session.messages.get_mut(index) {
+                            message.content.finalize();
+                        }
+                    }
+                }
                 self.sessions.set_status(id, SessionStatus::Idle);
                 self.persist_sessions_immediate([id]);
                 self.conversation_scroll.scroll_to_bottom();
@@ -841,7 +849,13 @@ impl AuiApp {
                     id.value(),
                     message.as_str()
                 ));
-                self.stream_targets.remove(&id);
+                if let Some(index) = self.stream_targets.remove(&id) {
+                    if let Some(session) = self.sessions.session_mut(id) {
+                        if let Some(message) = session.messages.get_mut(index) {
+                            message.content.finalize();
+                        }
+                    }
+                }
                 if let Some(fallback) = self.handle_invalid_model(id, &message, cx) {
                     self.sessions
                         .set_status(id, SessionStatus::Error { message: fallback });
@@ -881,14 +895,15 @@ impl AuiApp {
         if fallback.as_ref() == current.as_ref() {
             return None;
         }
-        session.model = fallback.clone();
-        self.persist_sessions_immediate([id]);
-        cx.notify();
-        Some(SharedString::from(format!(
+        let user_message = SharedString::from(format!(
             "Model '{}' is unavailable. Switched to '{}'. Please retry.",
             current.as_ref(),
             fallback.as_ref()
-        )))
+        ));
+        session.model = fallback;
+        self.persist_sessions_immediate([id]);
+        cx.notify();
+        Some(user_message)
     }
 
     fn persist_session_debounced(&mut self, id: SessionId, cx: &mut Context<Self>) {
@@ -1113,7 +1128,7 @@ fn export_session_markdown(session: &Session) -> String {
         out.push_str("_");
         out.push_str(&format_system_time(message.timestamp));
         out.push_str("_\n\n");
-        out.push_str(&message.content);
+        out.push_str(message.content.as_str());
         out.push_str("\n\n");
     }
 
@@ -1211,9 +1226,9 @@ pub(crate) fn model_options_for(catalog: &ModelCatalog, kind: ProviderKind) -> V
     for item in catalog.models_for(kind) {
         if !options
             .iter()
-            .any(|option| option.as_ref() == item.as_str())
+            .any(|option| option.as_ref() == item.as_ref())
         {
-            options.push(SharedString::from(item));
+            options.push(item.clone());
         }
     }
 
@@ -1562,10 +1577,9 @@ fn render_settings_panel(
 
     let mut model_rows = Vec::new();
     for option in shown {
-        let model_value = option.as_ref().to_string();
-        let label = short_model_label(&model_value, 56);
-        let model_value_for_click = model_value.clone();
-        let is_active = model_value == session.model.as_ref();
+        let label = short_model_label(option.as_ref(), 56);
+        let option_for_click = option.clone();
+        let is_active = option.as_ref() == session.model.as_ref();
         let bg = if is_active {
             hsla(0.48, 0.52, 0.9, 0.25)
         } else {
@@ -1590,7 +1604,7 @@ fn render_settings_panel(
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |view, _, _, cx| {
-                        view.set_session_model(session_id, &model_value_for_click, cx)
+                        view.set_session_model(session_id, option_for_click.as_ref(), cx)
                     }),
                 )
                 .child(label)

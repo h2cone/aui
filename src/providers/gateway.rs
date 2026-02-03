@@ -109,7 +109,7 @@ fn send_openai_stream(
     tx: &mpsc::Sender<ProviderEvent>,
 ) -> Result<(), String> {
     let OpenAiConfig { api_key, base_url } = openai_config(info)?;
-    let model = message.model.as_str();
+    let model = message.model.as_ref();
     let client = build_http_client()?;
     let prompt = build_prompt(message)?;
     let request_body = serde_json::json!({
@@ -220,7 +220,7 @@ fn send_anthropic_stream(
 ) -> Result<(), String> {
     let api_key =
         env::var("ANTHROPIC_API_KEY").map_err(|_| "Missing ANTHROPIC_API_KEY".to_string())?;
-    let model = message.model.as_str();
+    let model = message.model.as_ref();
     let max_tokens = parse_u32_env("ANTHROPIC_MAX_TOKENS", 1024);
     let base_url = env::var("ANTHROPIC_BASE_URL")
         .ok()
@@ -330,7 +330,7 @@ fn send_gemini_request(
         .ok()
         .or_else(|| env::var("GOOGLE_API_KEY").ok())
         .ok_or_else(|| "Missing GEMINI_API_KEY or GOOGLE_API_KEY".to_string())?;
-    let model = message.model.as_str();
+    let model = message.model.as_ref();
     let base_url = env::var("GEMINI_BASE_URL")
         .ok()
         .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string());
@@ -555,7 +555,7 @@ fn build_prompt(message: &UserMessage) -> Result<String, String> {
         }
     }
 
-    out.push_str(message.text.as_str());
+    out.push_str(message.text.as_ref());
 
     if message.attachments.is_empty() {
         return Ok(out);

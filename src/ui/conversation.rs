@@ -20,7 +20,7 @@ pub fn render_conversation(
             let (label, bubble_bg, text_color) = style_for_role(&message.role);
             let mut body_children = Vec::new();
 
-            let blocks = parse_blocks(&message.content);
+            let blocks = parse_blocks(message.content.as_str());
             for (block_index, block) in blocks.into_iter().enumerate() {
                 body_children.push(render_block(
                     view,

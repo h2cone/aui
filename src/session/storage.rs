@@ -244,7 +244,7 @@ fn read_messages(path: &Path) -> io::Result<Vec<SessionMessage>> {
         let timestamp = UNIX_EPOCH + Duration::from_secs(payload.ts);
         messages.push(SessionMessage {
             role,
-            content: payload.content,
+            content: payload.content.into(),
             timestamp,
         });
     }
@@ -261,7 +261,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::providers::{ProviderInfo, ProviderKind, SessionStatus};
-    use crate::session::{Session, SessionMessage, SessionRole, SessionStats};
+    use crate::session::{Session, SessionContent, SessionMessage, SessionRole, SessionStats};
 
     fn sample_session(id: u64) -> Session {
         let timestamp = UNIX_EPOCH + Duration::from_secs(123);
@@ -275,12 +275,12 @@ mod tests {
             messages: vec![
                 SessionMessage {
                     role: SessionRole::User,
-                    content: "hello".to_string(),
+                    content: SessionContent::from("hello"),
                     timestamp,
                 },
                 SessionMessage {
                     role: SessionRole::Assistant,
-                    content: "world".to_string(),
+                    content: SessionContent::from("world"),
                     timestamp,
                 },
             ],
@@ -312,13 +312,43 @@ mod tests {
         assert_eq!(stored.provider_name, session.provider.name.as_ref());
         assert_eq!(stored.provider_model, Some("model-x".to_string()));
         assert_eq!(stored.messages.len(), session.messages.len());
-        assert_eq!(stored.messages[0].content, "hello");
+        assert_eq!(stored.messages[0].content.as_str(), "hello");
         let ts = stored.messages[0]
             .timestamp
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         assert_eq!(ts, 123);
+    }
+
+    #[test]
+    fn save_streaming_message_persists_as_text() {
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+
+        let timestamp = UNIX_EPOCH + Duration::from_secs(5);
+        let mut streaming = SessionContent::streaming("partial");
+        streaming.push_str(" output");
+
+        let session = Session {
+            id: SessionId::new(9),
+            title: SharedString::from("alpha"),
+            provider: ProviderInfo::new("test", "Test Provider", ProviderKind::Anthropic),
+            model: SharedString::from("model-x"),
+            status: SessionStatus::Idle,
+            stats: SessionStats::new(),
+            messages: vec![SessionMessage {
+                role: SessionRole::Assistant,
+                content: streaming,
+                timestamp,
+            }],
+        };
+
+        storage.save_session(&session).expect("save");
+        let loaded = storage.load_sessions().expect("load");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].messages.len(), 1);
+        assert_eq!(loaded[0].messages[0].content.as_str(), "partial output");
     }
 
     #[test]

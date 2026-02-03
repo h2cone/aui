@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use gpui::SharedString;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,7 +23,7 @@ pub struct ModelCatalog {
 
 #[derive(Clone, Default)]
 pub struct ProviderModels {
-    pub models: Vec<String>,
+    pub models: Vec<SharedString>,
     pub updated_at: Option<u64>,
 }
 
@@ -53,7 +54,7 @@ impl ModelCatalog {
                 providers.insert(
                     kind,
                     ProviderModels {
-                        models: entry.models,
+                        models: entry.models.into_iter().map(SharedString::from).collect(),
                         updated_at: entry.updated_at,
                     },
                 );
@@ -69,7 +70,11 @@ impl ModelCatalog {
             providers.insert(
                 kind.key().to_string(),
                 CachedProviderModels {
-                    models: entry.models.clone(),
+                    models: entry
+                        .models
+                        .iter()
+                        .map(|model| model.as_ref().to_string())
+                        .collect(),
                     updated_at: entry.updated_at,
                 },
             );
@@ -95,11 +100,12 @@ impl ModelCatalog {
         }
     }
 
-    pub fn models_for(&self, kind: ProviderKind) -> Vec<String> {
+    pub fn models_for(&self, kind: ProviderKind) -> &[SharedString] {
+        const EMPTY: &[SharedString] = &[];
         self.providers
             .get(&kind)
-            .map(|entry| entry.models.clone())
-            .unwrap_or_default()
+            .map(|entry| entry.models.as_slice())
+            .unwrap_or(EMPTY)
     }
 
     pub fn updated_at(&self, kind: ProviderKind) -> Option<u64> {
@@ -110,7 +116,7 @@ impl ModelCatalog {
         self.providers.insert(
             kind,
             ProviderModels {
-                models,
+                models: models.into_iter().map(SharedString::from).collect(),
                 updated_at: Some(updated_at),
             },
         );
@@ -259,4 +265,28 @@ fn normalize_models(mut models: Vec<String>) -> Vec<String> {
     models.sort();
     models.dedup();
     models
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_models_converts_and_models_for_borrows() {
+        let mut catalog = ModelCatalog::default();
+        catalog.set_models(
+            ProviderKind::OpenAI,
+            vec!["gpt-test".to_string(), "gpt-test-2".to_string()],
+            123,
+        );
+
+        let models = catalog.models_for(ProviderKind::OpenAI);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].as_ref(), "gpt-test");
+        assert_eq!(models[1].as_ref(), "gpt-test-2");
+        assert_eq!(catalog.updated_at(ProviderKind::OpenAI), Some(123));
+
+        let missing = catalog.models_for(ProviderKind::Anthropic);
+        assert!(missing.is_empty());
+    }
 }

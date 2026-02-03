@@ -44,9 +44,68 @@ impl SessionRole {
 }
 
 #[derive(Clone, Debug)]
+pub enum SessionContent {
+    Text(SharedString),
+    Streaming(String),
+}
+
+impl SessionContent {
+    pub fn text(value: impl Into<SharedString>) -> Self {
+        Self::Text(value.into())
+    }
+
+    pub fn streaming(value: impl Into<String>) -> Self {
+        Self::Streaming(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Text(value) => value.as_ref(),
+            Self::Streaming(value) => value.as_str(),
+        }
+    }
+
+    pub fn push_str(&mut self, delta: &str) {
+        match self {
+            Self::Streaming(value) => value.push_str(delta),
+            Self::Text(value) => {
+                let mut out = value.as_ref().to_string();
+                out.push_str(delta);
+                *self = Self::Streaming(out);
+            }
+        }
+    }
+
+    pub fn finalize(&mut self) {
+        if let Self::Streaming(value) = self {
+            let text = SharedString::from(std::mem::take(value));
+            *self = Self::Text(text);
+        }
+    }
+}
+
+impl From<SharedString> for SessionContent {
+    fn from(value: SharedString) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl From<String> for SessionContent {
+    fn from(value: String) -> Self {
+        Self::Text(SharedString::from(value))
+    }
+}
+
+impl From<&str> for SessionContent {
+    fn from(value: &str) -> Self {
+        Self::Text(SharedString::from(value.to_string()))
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SessionMessage {
     pub role: SessionRole,
-    pub content: String,
+    pub content: SessionContent,
     pub timestamp: SystemTime,
 }
 
@@ -169,18 +228,23 @@ impl SessionManager {
         &mut self,
         id: SessionId,
         role: SessionRole,
-        content: String,
+        content: impl Into<SessionContent>,
     ) -> Option<usize> {
         let session = self.sessions.iter_mut().find(|session| session.id == id)?;
         session.messages.push(SessionMessage {
             role,
-            content,
+            content: content.into(),
             timestamp: SystemTime::now(),
         });
         Some(session.messages.len().saturating_sub(1))
     }
 
-    pub fn append_message(&mut self, id: SessionId, role: SessionRole, content: String) {
+    pub fn append_message(
+        &mut self,
+        id: SessionId,
+        role: SessionRole,
+        content: impl Into<SessionContent>,
+    ) {
         let _ = self.push_message(id, role, content);
     }
 
@@ -251,7 +315,20 @@ mod tests {
         assert_eq!(index, Some(0));
         let session = manager.session(id).expect("session missing");
         assert_eq!(session.messages.len(), 1);
-        assert_eq!(session.messages[0].content, "hello");
+        assert_eq!(session.messages[0].content.as_str(), "hello");
+    }
+
+    #[test]
+    fn session_content_streams_and_finalizes() {
+        let mut content = SessionContent::streaming("hi");
+        content.push_str(", there");
+        assert_eq!(content.as_str(), "hi, there");
+
+        content.finalize();
+        match &content {
+            SessionContent::Text(value) => assert_eq!(value.as_ref(), "hi, there"),
+            SessionContent::Streaming(_) => panic!("expected finalized content to be text"),
+        }
     }
 
     #[test]

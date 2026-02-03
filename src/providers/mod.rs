@@ -67,10 +67,10 @@ pub trait ProviderClient: Send + Sync {
 
 #[derive(Clone, Debug)]
 pub struct UserMessage {
-    pub text: String,
+    pub text: SharedString,
     pub attachments: Vec<Attachment>,
     pub context: Option<WorkingContext>,
-    pub model: String,
+    pub model: SharedString,
 }
 
 #[derive(Clone, Debug)]
