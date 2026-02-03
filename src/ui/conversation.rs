@@ -12,7 +12,7 @@ pub fn render_conversation(
     view: &AuiApp,
     session: Option<&Session>,
     cx: &mut gpui::Context<AuiApp>,
-) -> impl IntoElement {
+) -> Vec<gpui::AnyElement> {
     let mut message_items = Vec::new();
 
     if let Some(session) = session {
@@ -85,7 +85,7 @@ pub fn render_conversation(
         );
     }
 
-    div().flex().flex_col().gap_3().children(message_items)
+    message_items
 }
 
 fn render_block(

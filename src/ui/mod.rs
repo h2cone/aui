@@ -1,6 +1,7 @@
 pub mod conversation;
 pub mod input_box;
 pub mod layout;
+pub mod scrollbar;
 pub mod settings_panel;
 pub mod sidebar;
 pub mod text;

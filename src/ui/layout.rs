@@ -1,8 +1,8 @@
-use gpui::{Context, IntoElement, Window, div, prelude::*, px};
+use gpui::{Context, CursorStyle, IntoElement, MouseButton, Window, div, hsla, prelude::*, px};
 
 use crate::app::AuiApp;
 use crate::providers::SessionStatus;
-use crate::ui::{conversation, input_box, settings_panel, sidebar, theme, top_bar};
+use crate::ui::{conversation, input_box, scrollbar, settings_panel, sidebar, theme, top_bar};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutMetrics {
@@ -36,6 +36,13 @@ pub fn render_app(
 
     let active_session = view.active_session();
     let settings_open = view.settings_open();
+
+    let conversation_scroll = view.conversation_scroll_handle();
+    let conversation_scroll_thumb = scrollbar::compute_thumb(
+        conversation_scroll.bounds().size.height.to_f64() as f32,
+        conversation_scroll.max_offset().height.to_f64() as f32,
+        conversation_scroll.offset().y.to_f64() as f32,
+    );
     let error_banner = active_session.and_then(|session| match &session.status {
         SessionStatus::Error { message } => Some(
             div()
@@ -101,6 +108,8 @@ pub fn render_app(
                 .child(
                     div()
                         .flex_1()
+                        .min_h(px(0.))
+                        .min_w(px(0.))
                         .flex()
                         .child(
                             div()
@@ -113,6 +122,8 @@ pub fn render_app(
                         .child(
                             div()
                                 .flex_1()
+                                .min_h(px(0.))
+                                .min_w(px(0.))
                                 .flex()
                                 .flex_col()
                                 .bg(theme::surface())
@@ -129,13 +140,32 @@ pub fn render_app(
                                 .child(
                                     div()
                                         .flex_1()
-                                        .id("conversation-scroll")
-                                        .overflow_y_scroll()
-                                        .track_scroll(view.conversation_scroll_handle())
-                                        .p(px(metrics.content_padding))
-                                        .child(conversation::render_conversation(
-                                            view,
-                                            active_session,
+                                        .min_h(px(0.))
+                                        .min_w(px(0.))
+                                        .relative()
+                                        .child(
+                                            div()
+                                                .id("conversation-scroll")
+                                                .debug_selector(|| {
+                                                    "conversation-scroll".to_string()
+                                                })
+                                                .size_full()
+                                                .overflow_y_scroll()
+                                                .overflow_x_hidden()
+                                                .track_scroll(view.conversation_scroll_handle())
+                                                .p(px(metrics.content_padding))
+                                                .pr(px(metrics.content_padding + 16.0))
+                                                .flex()
+                                                .flex_col()
+                                                .gap_3()
+                                                .children(conversation::render_conversation(
+                                                    view,
+                                                    active_session,
+                                                    cx,
+                                                )),
+                                        )
+                                        .child(render_conversation_scrollbar(
+                                            conversation_scroll_thumb,
                                             cx,
                                         )),
                                 )
@@ -148,6 +178,69 @@ pub fn render_app(
                                 ),
                         ),
                 ),
+        )
+}
+
+fn render_conversation_scrollbar(
+    thumb: scrollbar::ScrollbarThumb,
+    cx: &mut Context<AuiApp>,
+) -> impl IntoElement {
+    let track_bg = theme::surface_2();
+    let track_border = theme::border_strong();
+    let thumb_bg = hsla(0.0, 0.0, 0.0, 0.28);
+    let thumb_bg_hover = hsla(0.0, 0.0, 0.0, 0.40);
+
+    div()
+        .id("conversation-scrollbar")
+        .debug_selector(|| "conversation-scrollbar".to_string())
+        .absolute()
+        .top(px(0.))
+        .right(px(0.))
+        .bottom(px(0.))
+        .w(px(12.))
+        .flex_shrink_0()
+        .min_h(px(0.))
+        .p(px(2.))
+        .cursor(CursorStyle::PointingHand)
+        .on_scroll_wheel(cx.listener(AuiApp::conversation_scrollbar_scroll_wheel))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(AuiApp::conversation_scrollbar_mouse_down),
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(AuiApp::conversation_scrollbar_mouse_up),
+        )
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(AuiApp::conversation_scrollbar_mouse_up),
+        )
+        .on_mouse_move(cx.listener(AuiApp::conversation_scrollbar_mouse_move))
+        .child(
+            div()
+                .size_full()
+                .rounded_md()
+                .bg(track_bg)
+                .border_1()
+                .border_color(track_border)
+                .child(if thumb.show_thumb {
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .child(div().h(px(thumb.thumb_top_px)))
+                        .child(
+                            div()
+                                .h(px(thumb.thumb_height_px))
+                                .rounded_md()
+                                .bg(thumb_bg)
+                                .hover(|style| style.bg(thumb_bg_hover)),
+                        )
+                        .child(div().flex_1())
+                        .into_any_element()
+                } else {
+                    div().h(px(0.)).into_any_element()
+                }),
         )
 }
 

@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    Context, CursorStyle, Entity, FontWeight, MouseButton, PathPromptOptions, ScrollHandle,
-    SharedString, Window, div, hsla, linear_color_stop, linear_gradient, prelude::*, px, rgb,
+    Context, CursorStyle, Entity, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathPromptOptions, ScrollHandle, ScrollWheelEvent, SharedString, Window, div,
+    hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb,
 };
 
 use crate::actions::{AttachFiles, ClearAttachments, ExportSession, Submit};
@@ -40,12 +41,19 @@ pub struct AuiApp {
     diff_decisions: HashMap<DiffKey, DiffDecision>,
     shell_collapsed: HashMap<ShellKey, bool>,
     conversation_scroll: ScrollHandle,
+    conversation_scrollbar_drag: Option<ConversationScrollbarDrag>,
     model_catalog: ModelCatalog,
     model_refreshing: HashSet<ProviderKind>,
     model_refresh_errors: HashMap<ProviderKind, SharedString>,
     model_refresh_user_requested: HashSet<ProviderKind>,
     settings_open: bool,
     settings_show_all_models: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ConversationScrollbarDrag {
+    grab_offset_in_thumb_px: f32,
+    thumb_height_px: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -179,6 +187,7 @@ impl AuiApp {
             diff_decisions,
             shell_collapsed: HashMap::new(),
             conversation_scroll,
+            conversation_scrollbar_drag: None,
             model_catalog,
             model_refreshing: HashSet::new(),
             model_refresh_errors: HashMap::new(),
@@ -208,6 +217,127 @@ impl AuiApp {
 
     pub fn conversation_scroll_handle(&self) -> &ScrollHandle {
         &self.conversation_scroll
+    }
+
+    pub fn conversation_scrollbar_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.conversation_scroll.max_offset().height.to_f64() as f32 <= 0.5 {
+            return;
+        }
+
+        let delta = event.delta.pixel_delta(window.line_height());
+        let current = self.conversation_scroll.offset();
+        self.conversation_scroll
+            .set_offset(point(current.x, current.y + delta.y));
+        cx.notify();
+    }
+
+    pub fn conversation_scrollbar_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let bounds = self.conversation_scroll.bounds();
+        let viewport_height_px = bounds.size.height.to_f64() as f32;
+        let scroll_max_height_px = self.conversation_scroll.max_offset().height.to_f64() as f32;
+        if viewport_height_px <= 0.0 || scroll_max_height_px <= 0.5 {
+            return;
+        }
+
+        let offset_y_px = self.conversation_scroll.offset().y.to_f64() as f32;
+        let thumb = crate::ui::scrollbar::compute_thumb(
+            viewport_height_px,
+            scroll_max_height_px,
+            offset_y_px,
+        );
+        if !thumb.show_thumb {
+            return;
+        }
+
+        let mouse_y = event.position.y.to_f64() as f32;
+        let bounds_top = bounds.top().to_f64() as f32;
+        let y_in_bounds = (mouse_y - bounds_top).clamp(0.0, viewport_height_px);
+
+        let in_thumb = y_in_bounds >= thumb.thumb_top_px
+            && y_in_bounds <= thumb.thumb_top_px + thumb.thumb_height_px;
+        let grab_offset_in_thumb_px = if in_thumb {
+            y_in_bounds - thumb.thumb_top_px
+        } else {
+            thumb.thumb_height_px * 0.5
+        };
+
+        let desired_thumb_top = y_in_bounds - grab_offset_in_thumb_px;
+        let new_offset_y_px = crate::ui::scrollbar::offset_for_thumb_top(
+            viewport_height_px,
+            scroll_max_height_px,
+            thumb.thumb_height_px,
+            desired_thumb_top,
+        );
+        let current = self.conversation_scroll.offset();
+        self.conversation_scroll
+            .set_offset(point(current.x, px(new_offset_y_px)));
+
+        self.conversation_scrollbar_drag = Some(ConversationScrollbarDrag {
+            grab_offset_in_thumb_px,
+            thumb_height_px: thumb.thumb_height_px,
+        });
+        cx.notify();
+    }
+
+    pub fn conversation_scrollbar_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.conversation_scrollbar_drag else {
+            return;
+        };
+
+        if !event.dragging() {
+            self.conversation_scrollbar_drag = None;
+            cx.notify();
+            return;
+        }
+
+        let bounds = self.conversation_scroll.bounds();
+        let viewport_height_px = bounds.size.height.to_f64() as f32;
+        let scroll_max_height_px = self.conversation_scroll.max_offset().height.to_f64() as f32;
+        if viewport_height_px <= 0.0 || scroll_max_height_px <= 0.5 {
+            return;
+        }
+
+        let mouse_y = event.position.y.to_f64() as f32;
+        let bounds_top = bounds.top().to_f64() as f32;
+        let y_in_bounds = (mouse_y - bounds_top).clamp(0.0, viewport_height_px);
+        let desired_thumb_top = y_in_bounds - drag.grab_offset_in_thumb_px;
+
+        let new_offset_y_px = crate::ui::scrollbar::offset_for_thumb_top(
+            viewport_height_px,
+            scroll_max_height_px,
+            drag.thumb_height_px,
+            desired_thumb_top,
+        );
+        let current = self.conversation_scroll.offset();
+        self.conversation_scroll
+            .set_offset(point(current.x, px(new_offset_y_px)));
+        cx.notify();
+    }
+
+    pub fn conversation_scrollbar_mouse_up(
+        &mut self,
+        _: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.conversation_scrollbar_drag.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub fn settings_open(&self) -> bool {
@@ -1760,5 +1890,164 @@ mod tests {
             view.toggle_settings(cx);
             let _ = view.render(window, cx).into_any_element();
         });
+    }
+
+    #[gpui::test]
+    fn conversation_scrolls_and_scrollbar_drives_scroll(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, point, px, size};
+
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+        let config = config::Config {
+            default_provider_id: "anthropic".to_string(),
+            debug: false,
+        };
+        let catalog = seeded_model_catalog();
+
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let text_input = cx.new(|cx| TextInput::new(cx));
+            let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model"));
+            let gateway = ProviderGateway::new();
+            AuiApp::new_with(
+                cx,
+                text_input,
+                model_input,
+                gateway,
+                config.clone(),
+                storage.clone(),
+                catalog.clone(),
+                false,
+            )
+        });
+        cx.simulate_resize(size(px(900.), px(500.)));
+
+        app.update_in(cx, |view, _, cx| {
+            view.new_session(cx);
+            let id = view.active_session_id().expect("active session");
+            for ix in 0..80usize {
+                view.sessions.append_message(
+                    id,
+                    SessionRole::Assistant,
+                    format!("message {ix}\n\n{}\n", "lorem ipsum ".repeat(20)),
+                );
+            }
+            cx.notify();
+        });
+
+        cx.draw(point(px(0.), px(0.)), size(px(900.), px(500.)), |_, _| {
+            app.clone()
+        });
+        let viewport = cx.update(|window, _| window.viewport_size());
+        assert_eq!(viewport, size(px(900.), px(500.)));
+
+        let max_offset = cx.read_entity(&app, |view, _| {
+            view.conversation_scroll.max_offset().height.to_f64() as f32
+        });
+        assert!(max_offset > 0.5, "expected conversation to be scrollable");
+
+        let mid_offset_y = -max_offset * 0.5;
+        app.update_in(cx, |view, _, cx| {
+            view.conversation_scroll
+                .set_offset(point(px(0.), px(mid_offset_y)));
+            cx.notify();
+        });
+        cx.draw(point(px(0.), px(0.)), size(px(900.), px(500.)), |_, _| {
+            app.clone()
+        });
+
+        let scroll_bounds = cx
+            .debug_bounds("conversation-scroll")
+            .expect("conversation-scroll bounds");
+        let scrollbar_bounds = cx
+            .debug_bounds("conversation-scrollbar")
+            .expect("conversation-scrollbar bounds");
+        assert!(
+            scrollbar_bounds.right() <= viewport.width,
+            "expected scrollbar to be within viewport (scrollbar_bounds={scrollbar_bounds:?} viewport={viewport:?})"
+        );
+        assert!(
+            scroll_bounds.right() <= viewport.width,
+            "expected conversation-scroll to be within viewport (scroll_bounds={scroll_bounds:?} viewport={viewport:?})"
+        );
+
+        let scroll_pos = point(scroll_bounds.left() + px(4.), scroll_bounds.top() + px(4.));
+        assert!(
+            scroll_bounds.contains(&scroll_pos),
+            "expected scroll_pos to be within conversation-scroll bounds"
+        );
+        let before_scroll = cx.read_entity(&app, |view, _| {
+            view.conversation_scroll.offset().y.to_f64() as f32
+        });
+        cx.simulate_event(ScrollWheelEvent {
+            position: scroll_pos,
+            delta: ScrollDelta::Pixels(point(px(0.), px(120.))),
+            ..Default::default()
+        });
+
+        let after_scroll = cx.read_entity(&app, |view, _| {
+            view.conversation_scroll.offset().y.to_f64() as f32
+        });
+        assert!(
+            after_scroll > before_scroll,
+            "expected wheel scroll to move offset (before_scroll={before_scroll} after_scroll={after_scroll})"
+        );
+
+        let start_drag = scrollbar_bounds.center();
+        assert!(
+            scrollbar_bounds.contains(&start_drag),
+            "expected start_drag to be within conversation-scrollbar bounds (bounds={scrollbar_bounds:?} start_drag={start_drag:?})"
+        );
+
+        let before_bar_wheel = cx.read_entity(&app, |view, _| {
+            view.conversation_scroll.offset().y.to_f64() as f32
+        });
+
+        cx.simulate_event(ScrollWheelEvent {
+            position: start_drag,
+            delta: ScrollDelta::Pixels(point(px(0.), px(60.))),
+            ..Default::default()
+        });
+        let after_bar_wheel = cx.read_entity(&app, |view, _| {
+            view.conversation_scroll.offset().y.to_f64() as f32
+        });
+        assert!(
+            after_bar_wheel > before_bar_wheel,
+            "expected wheel over scrollbar to scroll (before={before_bar_wheel} after={after_bar_wheel})"
+        );
+        let before_drag = cx.read_entity(&app, |view, _| {
+            view.conversation_scroll.offset().y.to_f64() as f32
+        });
+        assert!(
+            !cx.read_entity(&app, |view, _| view.conversation_scrollbar_drag.is_some()),
+            "expected scrollbar drag state to be empty initially"
+        );
+
+        cx.simulate_mouse_down(start_drag, MouseButton::Left, Modifiers::none());
+        assert!(
+            cx.read_entity(&app, |view, _| view.conversation_scrollbar_drag.is_some()),
+            "expected mouse down on scrollbar to start dragging"
+        );
+        cx.simulate_mouse_move(
+            point(start_drag.x, start_drag.y + px(120.)),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            point(start_drag.x, start_drag.y + px(120.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        assert!(
+            !cx.read_entity(&app, |view, _| view.conversation_scrollbar_drag.is_some()),
+            "expected mouse up to end dragging"
+        );
+
+        let after_drag = cx.read_entity(&app, |view, _| {
+            view.conversation_scroll.offset().y.to_f64() as f32
+        });
+        assert!(
+            after_drag < before_drag,
+            "expected drag to change offset (before_drag={before_drag} after_drag={after_drag})"
+        );
     }
 }
