@@ -65,8 +65,22 @@ pub trait ProviderClient: Send + Sync {
     fn info(&self) -> ProviderInfo;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConversationRole {
+    System,
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConversationMessage {
+    pub role: ConversationRole,
+    pub content: SharedString,
+}
+
 #[derive(Clone, Debug)]
 pub struct UserMessage {
+    pub history: Vec<ConversationMessage>,
     pub text: SharedString,
     pub attachments: Vec<Attachment>,
     pub context: Option<WorkingContext>,

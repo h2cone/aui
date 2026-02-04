@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use crate::logger;
 use crate::providers::{
-    ProviderClient, ProviderEvent, ProviderInfo, ProviderKind, ProviderStream, SessionStatus,
-    UserMessage,
+    ConversationMessage, ConversationRole, ProviderClient, ProviderEvent, ProviderInfo,
+    ProviderKind, ProviderStream, SessionStatus, UserMessage,
 };
 
 pub struct ProviderGateway {
@@ -112,11 +112,12 @@ fn send_openai_stream(
     let model = message.model.as_ref();
     let client = build_http_client()?;
     let prompt = build_prompt(message)?;
+    let messages = openai_messages(message, &prompt);
     let request_body = serde_json::json!({
         "model": model,
         "stream": true,
         "stream_options": { "include_usage": true },
-        "messages": [{ "role": "user", "content": prompt }],
+        "messages": messages,
     });
     let url = format!("{}/chat/completions", base_url);
     let response = client
@@ -226,12 +227,19 @@ fn send_anthropic_stream(
         .ok()
         .unwrap_or_else(|| "https://api.anthropic.com".to_string());
 
-    let request_body = serde_json::json!({
+    let prompt = build_prompt(message)?;
+    let (system, messages) = anthropic_messages(message, &prompt);
+    let mut request_body = serde_json::json!({
         "model": model,
         "max_tokens": max_tokens,
         "stream": true,
-        "messages": [{ "role": "user", "content": build_prompt(message)? }],
+        "messages": messages,
     });
+    if let Some(system) = system {
+        if let Some(obj) = request_body.as_object_mut() {
+            obj.insert("system".to_string(), Value::String(system));
+        }
+    }
     let client = build_http_client()?;
     let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
     let response = client
@@ -345,7 +353,7 @@ fn send_gemini_request(
         api_key
     );
     let request_body = serde_json::json!({
-        "contents": [{ "role": "user", "parts": [{ "text": prompt }] }]
+        "contents": gemini_contents(message, &prompt),
     });
     let client = build_http_client()?;
     let response = client
@@ -543,6 +551,133 @@ fn parse_u32_env(key: &str, fallback: u32) -> u32 {
         .unwrap_or(fallback)
 }
 
+fn parse_usize_env(key: &str, fallback: usize) -> usize {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(fallback)
+}
+
+fn clamp_history_start_with_max(
+    history: &[ConversationMessage],
+    prompt_len: usize,
+    max_chars: usize,
+) -> usize {
+    if max_chars == 0 {
+        return history.len();
+    }
+    let mut total = prompt_len;
+    for msg in history {
+        total = total.saturating_add(msg.content.as_ref().len());
+    }
+
+    let mut start = 0;
+    while start < history.len() && total > max_chars {
+        total = total.saturating_sub(history[start].content.as_ref().len());
+        start += 1;
+    }
+    start
+}
+
+fn clamp_history_start(history: &[ConversationMessage], prompt_len: usize) -> usize {
+    let max_chars = parse_usize_env("AUI_MAX_CONTEXT_CHARS", 120_000);
+    clamp_history_start_with_max(history, prompt_len, max_chars)
+}
+
+fn openai_role(role: ConversationRole) -> &'static str {
+    match role {
+        ConversationRole::System => "system",
+        ConversationRole::User => "user",
+        ConversationRole::Assistant => "assistant",
+    }
+}
+
+fn anthropic_role(role: ConversationRole) -> Option<&'static str> {
+    match role {
+        ConversationRole::System => None,
+        ConversationRole::User => Some("user"),
+        ConversationRole::Assistant => Some("assistant"),
+    }
+}
+
+fn gemini_role(role: ConversationRole) -> &'static str {
+    match role {
+        ConversationRole::System | ConversationRole::User => "user",
+        ConversationRole::Assistant => "model",
+    }
+}
+
+fn openai_messages(message: &UserMessage, prompt: &str) -> Vec<Value> {
+    let start = clamp_history_start(&message.history, prompt.len());
+    let mut out: Vec<Value> = message.history[start..]
+        .iter()
+        .map(|msg| {
+            serde_json::json!({
+                "role": openai_role(msg.role),
+                "content": msg.content.as_ref(),
+            })
+        })
+        .collect();
+    out.push(serde_json::json!({
+        "role": "user",
+        "content": prompt,
+    }));
+    out
+}
+
+fn anthropic_messages(message: &UserMessage, prompt: &str) -> (Option<String>, Vec<Value>) {
+    let start = clamp_history_start(&message.history, prompt.len());
+
+    let mut system_parts: Vec<&str> = Vec::new();
+    let mut messages: Vec<Value> = Vec::new();
+
+    for msg in &message.history[start..] {
+        match msg.role {
+            ConversationRole::System => system_parts.push(msg.content.as_ref()),
+            role => {
+                let Some(role) = anthropic_role(role) else {
+                    continue;
+                };
+                messages.push(serde_json::json!({
+                    "role": role,
+                    "content": msg.content.as_ref(),
+                }));
+            }
+        }
+    }
+
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": prompt,
+    }));
+
+    let system = if system_parts.is_empty() {
+        None
+    } else {
+        Some(system_parts.join("\n\n"))
+    };
+
+    (system, messages)
+}
+
+fn gemini_contents(message: &UserMessage, prompt: &str) -> Vec<Value> {
+    let start = clamp_history_start(&message.history, prompt.len());
+    let mut out: Vec<Value> = message.history[start..]
+        .iter()
+        .map(|msg| {
+            serde_json::json!({
+                "role": gemini_role(msg.role),
+                "parts": [{ "text": msg.content.as_ref() }],
+            })
+        })
+        .collect();
+    out.push(serde_json::json!({
+        "role": "user",
+        "parts": [{ "text": prompt }],
+    }));
+    out
+}
+
 fn build_prompt(message: &UserMessage) -> Result<String, String> {
     const MAX_BYTES: u64 = 200_000;
 
@@ -637,6 +772,7 @@ fn fence_language_for_path(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::SharedString;
 
     #[test]
     fn stream_text_chunks_and_reassembles() {
@@ -691,5 +827,138 @@ mod tests {
         let second = tool_calls.get("b").expect("missing tool call");
         assert_eq!(second.name, "first");
         assert!(second.args.is_empty());
+    }
+
+    #[test]
+    fn clamp_history_start_drops_oldest_messages() {
+        let history = vec![
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: SharedString::from("aaaa".to_string()),
+            },
+            ConversationMessage {
+                role: ConversationRole::Assistant,
+                content: SharedString::from("bbbb".to_string()),
+            },
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: SharedString::from("cccc".to_string()),
+            },
+        ];
+
+        // Total would be 4+4+4 + prompt_len(2) = 14. With a max of 10 we should drop the first
+        // message (4 chars), leaving 10 exactly.
+        let start = clamp_history_start_with_max(&history, 2, 10);
+        assert_eq!(start, 1);
+
+        // With a max of 5 we drop until only the last message fits (4 + 2 = 6 still too big),
+        // so history is fully dropped.
+        let start = clamp_history_start_with_max(&history, 2, 5);
+        assert_eq!(start, 3);
+    }
+
+    #[test]
+    fn openai_messages_include_history_and_prompt() {
+        let message = UserMessage {
+            history: vec![
+                ConversationMessage {
+                    role: ConversationRole::System,
+                    content: SharedString::from("rules".to_string()),
+                },
+                ConversationMessage {
+                    role: ConversationRole::User,
+                    content: SharedString::from("hi".to_string()),
+                },
+                ConversationMessage {
+                    role: ConversationRole::Assistant,
+                    content: SharedString::from("hello".to_string()),
+                },
+            ],
+            text: SharedString::from("ignored".to_string()),
+            attachments: Vec::new(),
+            context: None,
+            model: SharedString::from("gpt-test".to_string()),
+        };
+
+        let messages = openai_messages(&message, "next");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(
+            messages[0].get("role").and_then(Value::as_str),
+            Some("system")
+        );
+        assert_eq!(
+            messages[1].get("role").and_then(Value::as_str),
+            Some("user")
+        );
+        assert_eq!(
+            messages[2].get("role").and_then(Value::as_str),
+            Some("assistant")
+        );
+        assert_eq!(
+            messages[3].get("content").and_then(Value::as_str),
+            Some("next")
+        );
+    }
+
+    #[test]
+    fn anthropic_messages_extract_system_prompt() {
+        let message = UserMessage {
+            history: vec![
+                ConversationMessage {
+                    role: ConversationRole::System,
+                    content: SharedString::from("be terse".to_string()),
+                },
+                ConversationMessage {
+                    role: ConversationRole::User,
+                    content: SharedString::from("hi".to_string()),
+                },
+            ],
+            text: SharedString::from("ignored".to_string()),
+            attachments: Vec::new(),
+            context: None,
+            model: SharedString::from("claude-test".to_string()),
+        };
+
+        let (system, messages) = anthropic_messages(&message, "next");
+        assert_eq!(system.as_deref(), Some("be terse"));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[0].get("role").and_then(Value::as_str),
+            Some("user")
+        );
+        assert_eq!(
+            messages[1].get("content").and_then(Value::as_str),
+            Some("next")
+        );
+    }
+
+    #[test]
+    fn gemini_contents_map_assistant_to_model() {
+        let message = UserMessage {
+            history: vec![ConversationMessage {
+                role: ConversationRole::Assistant,
+                content: SharedString::from("hello".to_string()),
+            }],
+            text: SharedString::from("ignored".to_string()),
+            attachments: Vec::new(),
+            context: None,
+            model: SharedString::from("gemini-test".to_string()),
+        };
+
+        let contents = gemini_contents(&message, "next");
+        assert_eq!(contents.len(), 2);
+        assert_eq!(
+            contents[0].get("role").and_then(Value::as_str),
+            Some("model")
+        );
+        assert_eq!(
+            contents[1]
+                .get("parts")
+                .and_then(Value::as_array)
+                .and_then(|parts| parts.first())
+                .and_then(|part| part.get("text"))
+                .and_then(Value::as_str),
+            Some("next")
+        );
     }
 }

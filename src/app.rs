@@ -17,8 +17,8 @@ use crate::logger;
 use crate::model_catalog::{ModelCatalog, fetch_models, now_epoch_secs, should_refresh};
 use crate::providers::gateway::ProviderGateway;
 use crate::providers::{
-    Attachment, ProviderEvent, ProviderInfo, ProviderKind, SessionStatus, UserMessage,
-    WorkingContext,
+    Attachment, ConversationMessage, ConversationRole, ProviderEvent, ProviderInfo, ProviderKind,
+    SessionStatus, UserMessage, WorkingContext,
 };
 use crate::session::{
     Session, SessionContent, SessionId, SessionManager, SessionRole, SessionStorage,
@@ -94,6 +94,28 @@ impl ShellKey {
             block_index,
         }
     }
+}
+
+fn session_to_provider_history(session: &Session) -> Vec<ConversationMessage> {
+    session
+        .messages
+        .iter()
+        .filter_map(|msg| {
+            let role = match msg.role {
+                SessionRole::User => ConversationRole::User,
+                SessionRole::Assistant => ConversationRole::Assistant,
+                SessionRole::Tool => ConversationRole::Assistant,
+            };
+            let content = msg.content.as_str();
+            if content.trim().is_empty() {
+                return None;
+            }
+            Some(ConversationMessage {
+                role,
+                content: SharedString::from(content.to_string()),
+            })
+        })
+        .collect()
 }
 
 impl AuiApp {
@@ -665,6 +687,12 @@ impl AuiApp {
             return;
         };
 
+        let history: Vec<ConversationMessage> = self
+            .sessions
+            .session(active_id)
+            .map(session_to_provider_history)
+            .unwrap_or_default();
+
         let user_text_len = message.as_ref().len();
         logger::debug(&format!(
             "submit message session={} len={} attachments={}",
@@ -705,6 +733,7 @@ impl AuiApp {
         ));
         let attachments = std::mem::take(&mut self.attachments);
         let stream = self.gateway.connect(&provider).send(UserMessage {
+            history,
             text: message,
             attachments,
             context: Some(WorkingContext {
@@ -1795,6 +1824,7 @@ fn short_model_label(value: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+    use std::time::SystemTime;
     use tempfile::tempdir;
 
     fn seeded_model_catalog() -> ModelCatalog {
@@ -1808,6 +1838,31 @@ mod tests {
             catalog.set_models(kind, Vec::new(), now);
         }
         catalog
+    }
+
+    #[test]
+    fn session_to_provider_history_maps_tool_as_assistant() {
+        let session = Session {
+            id: SessionId::new(1),
+            title: SharedString::from("Test".to_string()),
+            provider: ProviderInfo::new(
+                Arc::from("anthropic"),
+                Arc::from("Anthropic"),
+                ProviderKind::Anthropic,
+            ),
+            model: SharedString::from("test".to_string()),
+            status: SessionStatus::Idle,
+            stats: crate::session::SessionStats::new(),
+            messages: vec![crate::session::SessionMessage {
+                role: SessionRole::Tool,
+                content: SessionContent::text("Tool output: read_file\nhello"),
+                timestamp: SystemTime::now(),
+            }],
+        };
+
+        let history = session_to_provider_history(&session);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, ConversationRole::Assistant);
     }
 
     #[gpui::test]
