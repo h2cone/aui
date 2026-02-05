@@ -6,6 +6,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use gpui::SharedString;
 use serde_json::Value;
 
 use crate::logger;
@@ -111,8 +112,11 @@ fn send_openai_stream(
     let OpenAiConfig { api_key, base_url } = openai_config(info)?;
     let model = message.model.as_ref();
     let client = build_http_client()?;
-    let prompt = build_prompt(message)?;
-    let messages = openai_messages(message, &prompt);
+    let window = ContextWindowConfig::from_env();
+    let prompt = build_prompt(message, window)?;
+    let prompt_len = count_chars(&prompt);
+    let history = select_history_for_window(&message.history, prompt_len, window);
+    let messages = openai_messages(&history, &prompt);
     let request_body = serde_json::json!({
         "model": model,
         "stream": true,
@@ -227,8 +231,11 @@ fn send_anthropic_stream(
         .ok()
         .unwrap_or_else(|| "https://api.anthropic.com".to_string());
 
-    let prompt = build_prompt(message)?;
-    let (system, messages) = anthropic_messages(message, &prompt);
+    let window = ContextWindowConfig::from_env();
+    let prompt = build_prompt(message, window)?;
+    let prompt_len = count_chars(&prompt);
+    let history = select_history_for_window(&message.history, prompt_len, window);
+    let (system, messages) = anthropic_messages(&history, &prompt);
     let mut request_body = serde_json::json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -343,7 +350,10 @@ fn send_gemini_request(
         .ok()
         .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string());
     let api_version = env::var("GEMINI_API_VERSION").unwrap_or_else(|_| "v1beta".into());
-    let prompt = build_prompt(message)?;
+    let window = ContextWindowConfig::from_env();
+    let prompt = build_prompt(message, window)?;
+    let prompt_len = count_chars(&prompt);
+    let history = select_history_for_window(&message.history, prompt_len, window);
 
     let url = format!(
         "{}/{}/models/{}:generateContent?key={}",
@@ -353,7 +363,7 @@ fn send_gemini_request(
         api_key
     );
     let request_body = serde_json::json!({
-        "contents": gemini_contents(message, &prompt),
+        "contents": gemini_contents(&history, &prompt),
     });
     let client = build_http_client()?;
     let response = client
@@ -558,30 +568,184 @@ fn parse_usize_env(key: &str, fallback: usize) -> usize {
         .unwrap_or(fallback)
 }
 
-fn clamp_history_start_with_max(
-    history: &[ConversationMessage],
-    prompt_len: usize,
-    max_chars: usize,
-) -> usize {
-    if max_chars == 0 {
-        return history.len();
-    }
-    let mut total = prompt_len;
-    for msg in history {
-        total = total.saturating_add(msg.content.as_ref().len());
-    }
-
-    let mut start = 0;
-    while start < history.len() && total > max_chars {
-        total = total.saturating_sub(history[start].content.as_ref().len());
-        start += 1;
-    }
-    start
+#[derive(Clone, Copy, Debug)]
+struct ContextWindowConfig {
+    max_context_chars: usize,
+    reserved_history_chars: usize,
+    pinned_history_messages: usize,
 }
 
-fn clamp_history_start(history: &[ConversationMessage], prompt_len: usize) -> usize {
-    let max_chars = parse_usize_env("AUI_MAX_CONTEXT_CHARS", 120_000);
-    clamp_history_start_with_max(history, prompt_len, max_chars)
+impl ContextWindowConfig {
+    fn from_env() -> Self {
+        Self {
+            max_context_chars: parse_usize_env("AUI_MAX_CONTEXT_CHARS", 120_000),
+            reserved_history_chars: parse_usize_env("AUI_RESERVED_HISTORY_CHARS", 30_000),
+            pinned_history_messages: parse_usize_env("AUI_PINNED_HISTORY_MESSAGES", 2),
+        }
+    }
+}
+
+fn count_chars(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn truncate_to_chars(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+fn truncate_with_suffix(text: &str, max_chars: usize, suffix: &str) -> String {
+    if count_chars(text) <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let suffix_chars = count_chars(suffix);
+    if suffix_chars >= max_chars {
+        return truncate_to_chars(suffix, max_chars);
+    }
+    let head_chars = max_chars - suffix_chars;
+    let mut out = String::new();
+    out.push_str(&truncate_to_chars(text, head_chars));
+    out.push_str(suffix);
+    out
+}
+
+fn message_cost_chars(msg: &ConversationMessage) -> usize {
+    // Rough protocol overhead; keeps budgeting conservative without needing a tokenizer.
+    const OVERHEAD: usize = 16;
+    OVERHEAD.saturating_add(count_chars(msg.content.as_ref()))
+}
+
+fn omission_marker_message(omitted: usize) -> ConversationMessage {
+    ConversationMessage {
+        role: ConversationRole::System,
+        content: SharedString::from(format!("[…] {omitted} message(s) omitted.")),
+    }
+}
+
+fn select_history_for_window(
+    history: &[ConversationMessage],
+    prompt_len: usize,
+    window: ContextWindowConfig,
+) -> Vec<ConversationMessage> {
+    const PROTECT_RECENT_MESSAGES: usize = 2;
+    const MAX_MARKER_DROPS: usize = 1;
+
+    let history_budget = window.max_context_chars.saturating_sub(prompt_len);
+    if history_budget == 0 || history.is_empty() {
+        return Vec::new();
+    }
+
+    let mut indices = select_history_indices(history, window, history_budget);
+    if indices.len() == history.len() {
+        return indices.into_iter().map(|ix| history[ix].clone()).collect();
+    }
+
+    let mut used_cost: usize = indices
+        .iter()
+        .map(|&ix| message_cost_chars(&history[ix]))
+        .sum();
+    let remaining = history_budget.saturating_sub(used_cost);
+
+    let marker_cost = message_cost_chars(&omission_marker_message(history.len()));
+    let mut remaining = remaining;
+
+    // Optionally trade a small amount of non-critical history for a gap marker when we keep a
+    // pinned head and a recent tail.
+    let protect_recent_from = history.len().saturating_sub(PROTECT_RECENT_MESSAGES);
+    let mut drops = 0usize;
+    while remaining < marker_cost && drops < MAX_MARKER_DROPS {
+        let Some(pos) = indices.iter().position(|&ix| {
+            ix >= window.pinned_history_messages
+                && history[ix].role != ConversationRole::System
+                && ix < protect_recent_from
+        }) else {
+            break;
+        };
+        let removed = indices.remove(pos);
+        used_cost = used_cost.saturating_sub(message_cost_chars(&history[removed]));
+        remaining = history_budget.saturating_sub(used_cost);
+        drops += 1;
+    }
+
+    if remaining < marker_cost {
+        return indices.into_iter().map(|ix| history[ix].clone()).collect();
+    }
+
+    let omitted = history.len().saturating_sub(indices.len());
+    let marker = omission_marker_message(omitted);
+
+    // Insert after any kept "head" context (system + pinned head), before the recent tail.
+    let insert_at = indices
+        .iter()
+        .take_while(|&&ix| {
+            ix < window.pinned_history_messages || history[ix].role == ConversationRole::System
+        })
+        .count();
+
+    let mut out: Vec<ConversationMessage> =
+        indices.into_iter().map(|ix| history[ix].clone()).collect();
+    out.insert(insert_at, marker);
+    out
+}
+
+fn select_history_indices(
+    history: &[ConversationMessage],
+    window: ContextWindowConfig,
+    mut budget: usize,
+) -> Vec<usize> {
+    if budget == 0 {
+        return Vec::new();
+    }
+
+    let mut included = vec![false; history.len()];
+    let mut indices: Vec<usize> = Vec::new();
+
+    // Prefer keeping system messages.
+    for (ix, msg) in history.iter().enumerate() {
+        if msg.role != ConversationRole::System {
+            continue;
+        }
+        let cost = message_cost_chars(msg);
+        if cost > budget {
+            break;
+        }
+        budget -= cost;
+        included[ix] = true;
+        indices.push(ix);
+    }
+
+    // Keep a small pinned head of the conversation.
+    for ix in 0..history.len().min(window.pinned_history_messages) {
+        if included[ix] {
+            continue;
+        }
+        let cost = message_cost_chars(&history[ix]);
+        if cost > budget {
+            break;
+        }
+        budget -= cost;
+        included[ix] = true;
+        indices.push(ix);
+    }
+
+    // Fill the remaining budget from the most recent messages backwards.
+    for ix in (0..history.len()).rev() {
+        if included[ix] {
+            continue;
+        }
+        let cost = message_cost_chars(&history[ix]);
+        if cost > budget {
+            continue;
+        }
+        budget -= cost;
+        included[ix] = true;
+        indices.push(ix);
+    }
+
+    indices.sort_unstable();
+    indices
 }
 
 fn openai_role(role: ConversationRole) -> &'static str {
@@ -607,9 +771,8 @@ fn gemini_role(role: ConversationRole) -> &'static str {
     }
 }
 
-fn openai_messages(message: &UserMessage, prompt: &str) -> Vec<Value> {
-    let start = clamp_history_start(&message.history, prompt.len());
-    let mut out: Vec<Value> = message.history[start..]
+fn openai_messages(history: &[ConversationMessage], prompt: &str) -> Vec<Value> {
+    let mut out: Vec<Value> = history
         .iter()
         .map(|msg| {
             serde_json::json!({
@@ -625,13 +788,14 @@ fn openai_messages(message: &UserMessage, prompt: &str) -> Vec<Value> {
     out
 }
 
-fn anthropic_messages(message: &UserMessage, prompt: &str) -> (Option<String>, Vec<Value>) {
-    let start = clamp_history_start(&message.history, prompt.len());
-
+fn anthropic_messages(
+    history: &[ConversationMessage],
+    prompt: &str,
+) -> (Option<String>, Vec<Value>) {
     let mut system_parts: Vec<&str> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
 
-    for msg in &message.history[start..] {
+    for msg in history {
         match msg.role {
             ConversationRole::System => system_parts.push(msg.content.as_ref()),
             role => {
@@ -660,9 +824,8 @@ fn anthropic_messages(message: &UserMessage, prompt: &str) -> (Option<String>, V
     (system, messages)
 }
 
-fn gemini_contents(message: &UserMessage, prompt: &str) -> Vec<Value> {
-    let start = clamp_history_start(&message.history, prompt.len());
-    let mut out: Vec<Value> = message.history[start..]
+fn gemini_contents(history: &[ConversationMessage], prompt: &str) -> Vec<Value> {
+    let mut out: Vec<Value> = history
         .iter()
         .map(|msg| {
             serde_json::json!({
@@ -678,8 +841,12 @@ fn gemini_contents(message: &UserMessage, prompt: &str) -> Vec<Value> {
     out
 }
 
-fn build_prompt(message: &UserMessage) -> Result<String, String> {
+fn build_prompt(message: &UserMessage, window: ContextWindowConfig) -> Result<String, String> {
     const MAX_BYTES: u64 = 200_000;
+    const USER_TRUNCATION_SUFFIX: &str =
+        "\n\n[... user message truncated to fit the context window ...]\n";
+    const ATTACHMENT_TRUNCATION_SUFFIX: &str =
+        "\n\n[... attachment truncated to fit the context window ...]\n";
 
     let mut out = String::new();
     if let Some(context) = message.context.as_ref() {
@@ -690,35 +857,86 @@ fn build_prompt(message: &UserMessage) -> Result<String, String> {
         }
     }
 
-    out.push_str(message.text.as_ref());
+    // Hard limit: never allow the prompt itself to exceed the full window.
+    let mut out_chars = count_chars(&out);
+    let user_budget = window.max_context_chars.saturating_sub(out_chars);
+    let user_text =
+        truncate_with_suffix(message.text.as_ref(), user_budget, USER_TRUNCATION_SUFFIX);
+    out_chars = out_chars.saturating_add(count_chars(&user_text));
+    out.push_str(&user_text);
 
     if message.attachments.is_empty() {
         return Ok(out);
     }
 
-    out.push_str("\n\n---\nAttachments:\n");
+    // Soft limit for attachments: keep some room for history by default.
+    let soft_prompt_max = window
+        .max_context_chars
+        .saturating_sub(window.reserved_history_chars)
+        .min(window.max_context_chars);
+    if out_chars >= soft_prompt_max {
+        return Ok(out);
+    }
+
+    let header = "\n\n---\nAttachments:\n";
+    let header_chars = count_chars(header);
+    if out_chars.saturating_add(header_chars) > soft_prompt_max {
+        return Ok(out);
+    }
+    out_chars = out_chars.saturating_add(header_chars);
+    out.push_str(header);
 
     for attachment in &message.attachments {
-        out.push_str("- ");
-        out.push_str(&attachment.name);
-        if let Some(path) = attachment.path.as_ref() {
-            out.push_str(" (");
-            out.push_str(&path.display().to_string());
-            out.push_str(")\n");
+        if out_chars >= soft_prompt_max {
+            break;
+        }
 
+        let mut line = format!("- {}", attachment.name);
+        if let Some(path) = attachment.path.as_ref() {
+            let with_path = format!("{line} ({})\n", path.display());
+            let without_path = format!("{line}\n");
+            line = if out_chars.saturating_add(count_chars(&with_path)) <= soft_prompt_max {
+                with_path
+            } else if out_chars.saturating_add(count_chars(&without_path)) <= soft_prompt_max {
+                without_path
+            } else {
+                break;
+            };
+        } else {
+            line.push('\n');
+            if out_chars.saturating_add(count_chars(&line)) > soft_prompt_max {
+                break;
+            }
+        }
+        out_chars = out_chars.saturating_add(count_chars(&line));
+        out.push_str(&line);
+
+        if let Some(path) = attachment.path.as_ref() {
             let meta = std::fs::metadata(path).map_err(|err| {
                 format!("Attachment metadata failed for {}: {err}", path.display())
             })?;
             let size = meta.len();
             if size > MAX_BYTES {
-                out.push_str("  [skipped: too large]\n");
+                let note = "  [skipped: too large]\n";
+                let note_chars = count_chars(note);
+                if out_chars.saturating_add(note_chars) > soft_prompt_max {
+                    break;
+                }
+                out_chars = out_chars.saturating_add(note_chars);
+                out.push_str(note);
                 continue;
             }
 
             let bytes = std::fs::read(path)
                 .map_err(|err| format!("Attachment read failed for {}: {err}", path.display()))?;
             if bytes.is_empty() {
-                out.push_str("  [empty file]\n");
+                let note = "  [empty file]\n";
+                let note_chars = count_chars(note);
+                if out_chars.saturating_add(note_chars) > soft_prompt_max {
+                    break;
+                }
+                out_chars = out_chars.saturating_add(note_chars);
+                out.push_str(note);
                 continue;
             }
 
@@ -726,21 +944,53 @@ fn build_prompt(message: &UserMessage) -> Result<String, String> {
             let content = match std::str::from_utf8(&bytes) {
                 Ok(text) => text,
                 Err(_) => {
-                    out.push_str("  [binary file omitted]\n");
+                    let note = "  [binary file omitted]\n";
+                    let note_chars = count_chars(note);
+                    if out_chars.saturating_add(note_chars) > soft_prompt_max {
+                        break;
+                    }
+                    out_chars = out_chars.saturating_add(note_chars);
+                    out.push_str(note);
                     continue;
                 }
             };
 
-            out.push_str("```");
-            out.push_str(language);
-            out.push_str("\n");
-            out.push_str(content);
-            if !content.ends_with('\n') {
+            if out_chars >= soft_prompt_max {
+                break;
+            }
+
+            let fence_open = format!("```{language}\n");
+            let fence_close = "```\n";
+            let overhead = count_chars(&fence_open) + count_chars(fence_close);
+            if out_chars.saturating_add(overhead) >= soft_prompt_max {
+                let note = "  [omitted: context budget]\n";
+                let note_chars = count_chars(note);
+                if out_chars.saturating_add(note_chars) > soft_prompt_max {
+                    break;
+                }
+                out_chars = out_chars.saturating_add(note_chars);
+                out.push_str(note);
+                continue;
+            }
+
+            let available = soft_prompt_max - out_chars - overhead;
+            let snippet = if count_chars(content) <= available {
+                content.to_string()
+            } else {
+                truncate_with_suffix(content, available, ATTACHMENT_TRUNCATION_SUFFIX)
+            };
+
+            let fence_open_chars = count_chars(&fence_open);
+            out_chars = out_chars.saturating_add(fence_open_chars);
+            out.push_str(&fence_open);
+            out_chars = out_chars.saturating_add(count_chars(&snippet));
+            out.push_str(&snippet);
+            if !snippet.ends_with('\n') {
+                out_chars = out_chars.saturating_add(1);
                 out.push('\n');
             }
-            out.push_str("```\n");
-        } else {
-            out.push('\n');
+            out_chars = out_chars.saturating_add(count_chars(fence_close));
+            out.push_str(fence_close);
         }
     }
 
@@ -830,57 +1080,105 @@ mod tests {
     }
 
     #[test]
-    fn clamp_history_start_drops_oldest_messages() {
+    fn select_history_keeps_pinned_and_recent_and_adds_marker_when_possible() {
+        let long = |label: &str| SharedString::from(format!("{label}{}", "x".repeat(120)));
         let history = vec![
             ConversationMessage {
                 role: ConversationRole::User,
-                content: SharedString::from("aaaa".to_string()),
-            },
-            ConversationMessage {
-                role: ConversationRole::Assistant,
-                content: SharedString::from("bbbb".to_string()),
+                content: long("a"),
             },
             ConversationMessage {
                 role: ConversationRole::User,
-                content: SharedString::from("cccc".to_string()),
+                content: long("b"),
+            },
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: long("c"),
+            },
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: long("d"),
+            },
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: long("e"),
+            },
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: long("f"),
             },
         ];
 
-        // Total would be 4+4+4 + prompt_len(2) = 14. With a max of 10 we should drop the first
-        // message (4 chars), leaving 10 exactly.
-        let start = clamp_history_start_with_max(&history, 2, 10);
-        assert_eq!(start, 1);
+        let pinned_cost = message_cost_chars(&history[0]);
+        let recent_cost = message_cost_chars(&history[4]) + message_cost_chars(&history[5]);
+        let removable_cost = message_cost_chars(&history[3]);
+        let window = ContextWindowConfig {
+            max_context_chars: pinned_cost + recent_cost + removable_cost,
+            reserved_history_chars: 0,
+            pinned_history_messages: 1,
+        };
+        let selected = select_history_for_window(&history, 0, window);
+        assert_eq!(selected.len(), 4);
+        assert!(selected[0].content.as_ref().starts_with('a'));
+        assert_eq!(selected[1].role, ConversationRole::System);
+        assert!(selected[1].content.as_ref().contains("omitted"));
+        assert!(selected[2].content.as_ref().starts_with('e'));
+        assert!(selected[3].content.as_ref().starts_with('f'));
 
-        // With a max of 5 we drop until only the last message fits (4 + 2 = 6 still too big),
-        // so history is fully dropped.
-        let start = clamp_history_start_with_max(&history, 2, 5);
-        assert_eq!(start, 3);
+        let window = ContextWindowConfig {
+            max_context_chars: pinned_cost + recent_cost,
+            reserved_history_chars: 0,
+            pinned_history_messages: 1,
+        };
+        let selected = select_history_for_window(&history, 0, window);
+        assert_eq!(selected.len(), 3);
+        assert!(selected[0].content.as_ref().starts_with('a'));
+        assert!(selected[1].content.as_ref().starts_with('e'));
+        assert!(selected[2].content.as_ref().starts_with('f'));
+    }
+
+    #[test]
+    fn select_history_counts_unicode_chars_not_utf8_bytes() {
+        let history = vec![
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: SharedString::from("汉".to_string()),
+            },
+            ConversationMessage {
+                role: ConversationRole::Assistant,
+                content: SharedString::from("汉".to_string()),
+            },
+        ];
+
+        // Each message should be costed by character count, not UTF-8 byte length.
+        let budget = message_cost_chars(&history[0]) + message_cost_chars(&history[1]);
+        let window = ContextWindowConfig {
+            max_context_chars: budget,
+            reserved_history_chars: 0,
+            pinned_history_messages: 0,
+        };
+        let selected = select_history_for_window(&history, 0, window);
+        assert_eq!(selected.len(), 2);
     }
 
     #[test]
     fn openai_messages_include_history_and_prompt() {
-        let message = UserMessage {
-            history: vec![
-                ConversationMessage {
-                    role: ConversationRole::System,
-                    content: SharedString::from("rules".to_string()),
-                },
-                ConversationMessage {
-                    role: ConversationRole::User,
-                    content: SharedString::from("hi".to_string()),
-                },
-                ConversationMessage {
-                    role: ConversationRole::Assistant,
-                    content: SharedString::from("hello".to_string()),
-                },
-            ],
-            text: SharedString::from("ignored".to_string()),
-            attachments: Vec::new(),
-            context: None,
-            model: SharedString::from("gpt-test".to_string()),
-        };
+        let history = vec![
+            ConversationMessage {
+                role: ConversationRole::System,
+                content: SharedString::from("rules".to_string()),
+            },
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: SharedString::from("hi".to_string()),
+            },
+            ConversationMessage {
+                role: ConversationRole::Assistant,
+                content: SharedString::from("hello".to_string()),
+            },
+        ];
 
-        let messages = openai_messages(&message, "next");
+        let messages = openai_messages(&history, "next");
         assert_eq!(messages.len(), 4);
         assert_eq!(
             messages[0].get("role").and_then(Value::as_str),
@@ -902,24 +1200,18 @@ mod tests {
 
     #[test]
     fn anthropic_messages_extract_system_prompt() {
-        let message = UserMessage {
-            history: vec![
-                ConversationMessage {
-                    role: ConversationRole::System,
-                    content: SharedString::from("be terse".to_string()),
-                },
-                ConversationMessage {
-                    role: ConversationRole::User,
-                    content: SharedString::from("hi".to_string()),
-                },
-            ],
-            text: SharedString::from("ignored".to_string()),
-            attachments: Vec::new(),
-            context: None,
-            model: SharedString::from("claude-test".to_string()),
-        };
+        let history = vec![
+            ConversationMessage {
+                role: ConversationRole::System,
+                content: SharedString::from("be terse".to_string()),
+            },
+            ConversationMessage {
+                role: ConversationRole::User,
+                content: SharedString::from("hi".to_string()),
+            },
+        ];
 
-        let (system, messages) = anthropic_messages(&message, "next");
+        let (system, messages) = anthropic_messages(&history, "next");
         assert_eq!(system.as_deref(), Some("be terse"));
         assert_eq!(messages.len(), 2);
         assert_eq!(
@@ -934,18 +1226,12 @@ mod tests {
 
     #[test]
     fn gemini_contents_map_assistant_to_model() {
-        let message = UserMessage {
-            history: vec![ConversationMessage {
-                role: ConversationRole::Assistant,
-                content: SharedString::from("hello".to_string()),
-            }],
-            text: SharedString::from("ignored".to_string()),
-            attachments: Vec::new(),
-            context: None,
-            model: SharedString::from("gemini-test".to_string()),
-        };
+        let history = vec![ConversationMessage {
+            role: ConversationRole::Assistant,
+            content: SharedString::from("hello".to_string()),
+        }];
 
-        let contents = gemini_contents(&message, "next");
+        let contents = gemini_contents(&history, "next");
         assert_eq!(contents.len(), 2);
         assert_eq!(
             contents[0].get("role").and_then(Value::as_str),
@@ -960,5 +1246,53 @@ mod tests {
                 .and_then(Value::as_str),
             Some("next")
         );
+    }
+
+    #[test]
+    fn build_prompt_truncates_user_text_to_window() {
+        let message = UserMessage {
+            history: Vec::new(),
+            text: SharedString::from("x".repeat(500)),
+            attachments: Vec::new(),
+            context: None,
+            model: SharedString::from("test".to_string()),
+        };
+        let window = ContextWindowConfig {
+            max_context_chars: 80,
+            reserved_history_chars: 0,
+            pinned_history_messages: 0,
+        };
+        let prompt = build_prompt(&message, window).expect("prompt");
+        assert!(count_chars(&prompt) <= window.max_context_chars);
+        assert!(prompt.contains("user message truncated"));
+    }
+
+    #[test]
+    fn build_prompt_truncates_attachments_to_preserve_reserved_history() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("big.txt");
+        std::fs::write(&path, "a".repeat(2000)).expect("write attachment");
+
+        let message = UserMessage {
+            history: Vec::new(),
+            text: SharedString::from("hi".to_string()),
+            attachments: vec![crate::providers::Attachment {
+                name: "big.txt".to_string(),
+                path: Some(path),
+            }],
+            context: None,
+            model: SharedString::from("test".to_string()),
+        };
+        let window = ContextWindowConfig {
+            max_context_chars: 400,
+            reserved_history_chars: 150,
+            pinned_history_messages: 0,
+        };
+
+        let prompt = build_prompt(&message, window).expect("prompt");
+        let soft_max = window.max_context_chars - window.reserved_history_chars;
+        assert!(count_chars(&prompt) <= soft_max);
+        assert!(prompt.contains("Attachments:"));
+        assert!(prompt.contains("attachment truncated"));
     }
 }
