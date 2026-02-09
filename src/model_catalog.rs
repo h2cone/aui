@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,6 +14,8 @@ use crate::providers::ProviderKind;
 
 const CACHE_FILE: &str = "models.json";
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60 * 6);
+const MODELS_DEV_SCHEMA_URL: &str = "https://models.dev/model-schema.json";
+const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
 
 #[derive(Clone, Default)]
 pub struct ModelCatalog {
@@ -143,101 +144,123 @@ pub fn should_refresh(updated_at: Option<u64>) -> bool {
 }
 
 pub fn fetch_models(kind: ProviderKind) -> Result<Vec<String>, String> {
-    match kind {
-        ProviderKind::Anthropic => fetch_anthropic_models(),
-        ProviderKind::OpenAI => fetch_openai_models(),
-        ProviderKind::Gemini => fetch_gemini_models(),
+    match fetch_models_dev_payload(models_dev_schema_url())
+        .and_then(|payload| extract_models_from_schema(&payload, kind))
+    {
+        Ok(models) if !models.is_empty() => return Ok(models),
+        Ok(_) => logger::debug(&format!(
+            "models.dev schema returned no models kind={} fallback=api",
+            kind.key()
+        )),
+        Err(err) => logger::debug(&format!(
+            "models.dev schema refresh failed kind={} error={err} fallback=api",
+            kind.key()
+        )),
     }
+
+    let payload = fetch_models_dev_payload(models_dev_api_url())?;
+    extract_models_for_provider(&payload, kind)
 }
 
-fn fetch_anthropic_models() -> Result<Vec<String>, String> {
-    let api_key =
-        env::var("ANTHROPIC_API_KEY").map_err(|_| "Missing ANTHROPIC_API_KEY".to_string())?;
-    let base_url = env::var("ANTHROPIC_BASE_URL")
-        .ok()
-        .unwrap_or_else(|| "https://api.anthropic.com".to_string());
-    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
-    let client = build_client()?;
-    let response = client
-        .get(url)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .send()
-        .map_err(|err| format!("Anthropic models request failed: {err}"))?;
-    let payload = parse_json_response(response)?;
-    let models = payload
-        .get("data")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(Value::as_str))
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(normalize_models(models))
+fn models_dev_schema_url() -> String {
+    std::env::var("MODELS_DEV_SCHEMA_URL").unwrap_or_else(|_| MODELS_DEV_SCHEMA_URL.to_string())
 }
 
-fn fetch_openai_models() -> Result<Vec<String>, String> {
-    let api_key = env::var("OPENAI_API_KEY").map_err(|_| "Missing OPENAI_API_KEY".to_string())?;
-    let base_url =
-        env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let client = build_client()?;
-    let response = client
-        .get(url)
-        .bearer_auth(api_key)
-        .send()
-        .map_err(|err| format!("OpenAI models request failed: {err}"))?;
-    let payload = parse_json_response(response)?;
-    let models = payload
-        .get("data")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(Value::as_str))
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(normalize_models(models))
+fn models_dev_api_url() -> String {
+    std::env::var("MODELS_DEV_API_URL").unwrap_or_else(|_| MODELS_DEV_API_URL.to_string())
 }
 
-fn fetch_gemini_models() -> Result<Vec<String>, String> {
-    let api_key = env::var("GEMINI_API_KEY")
-        .ok()
-        .or_else(|| env::var("GOOGLE_API_KEY").ok())
-        .ok_or_else(|| "Missing GEMINI_API_KEY or GOOGLE_API_KEY".to_string())?;
-    let base_url = env::var("GEMINI_BASE_URL")
-        .ok()
-        .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string());
-    let api_version = env::var("GEMINI_API_VERSION").unwrap_or_else(|_| "v1beta".into());
-    let url = format!(
-        "{}/{}/models?key={}",
-        base_url.trim_end_matches('/'),
-        api_version.trim_matches('/'),
-        api_key
-    );
+fn fetch_models_dev_payload(url: String) -> Result<Value, String> {
     let client = build_client()?;
     let response = client
         .get(url)
         .send()
-        .map_err(|err| format!("Gemini models request failed: {err}"))?;
-    let payload = parse_json_response(response)?;
-    let models = payload
-        .get("models")
+        .map_err(|err| format!("models.dev request failed: {err}"))?;
+    parse_json_response(response)
+}
+
+fn extract_models_from_schema(payload: &Value, kind: ProviderKind) -> Result<Vec<String>, String> {
+    let model_ids = payload
+        .get("$defs")
+        .and_then(|value| value.get("Model"))
+        .and_then(|value| value.get("enum"))
         .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("name").and_then(Value::as_str))
-                .map(|value| value.trim_start_matches("models/").to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        .ok_or_else(|| "models.dev schema missing $defs.Model.enum".to_string())?;
+
+    let provider_keys = models_dev_provider_keys(kind);
+    let mut models = Vec::new();
+    for value in model_ids {
+        let Some(full_id) = value.as_str() else {
+            continue;
+        };
+        let Some((provider_id, model_id)) = full_id.split_once('/') else {
+            continue;
+        };
+        if !provider_keys
+            .iter()
+            .any(|key| provider_id.eq_ignore_ascii_case(key))
+        {
+            continue;
+        }
+
+        let model_id = model_id.trim();
+        if model_id.is_empty() {
+            continue;
+        }
+        models.push(model_id.to_string());
+    }
+
+    if models.is_empty() {
+        return Err(format!(
+            "models.dev schema has no models for {}",
+            kind.key()
+        ));
+    }
+
     Ok(normalize_models(models))
+}
+
+fn extract_models_for_provider(payload: &Value, kind: ProviderKind) -> Result<Vec<String>, String> {
+    let catalog = payload
+        .as_object()
+        .ok_or_else(|| "models.dev response root is not an object".to_string())?;
+
+    let mut models = Vec::new();
+    let mut provider_found = false;
+    for provider_key in models_dev_provider_keys(kind) {
+        let Some(provider) = catalog.get(*provider_key) else {
+            continue;
+        };
+        provider_found = true;
+        let Some(provider_models) = provider.get("models").and_then(Value::as_object) else {
+            continue;
+        };
+        for (model_key, model_entry) in provider_models {
+            let model_id = model_entry
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or(model_key)
+                .trim();
+            if model_id.is_empty() {
+                continue;
+            }
+            models.push(model_id.to_string());
+        }
+    }
+
+    if !provider_found {
+        return Err(format!("models.dev provider not found for {}", kind.key()));
+    }
+
+    Ok(normalize_models(models))
+}
+
+fn models_dev_provider_keys(kind: ProviderKind) -> &'static [&'static str] {
+    match kind {
+        ProviderKind::Anthropic => &["anthropic"],
+        ProviderKind::OpenAI => &["openai"],
+        ProviderKind::Gemini => &["google", "gemini"],
+    }
 }
 
 fn build_client() -> Result<Client, String> {
@@ -288,5 +311,98 @@ mod tests {
 
         let missing = catalog.models_for(ProviderKind::Anthropic);
         assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn extract_models_for_provider_reads_models_dev_api_shape() {
+        let payload = serde_json::json!({
+            "openai": {
+                "models": {
+                    "gpt-4.1": { "id": "gpt-4.1" },
+                    "gpt-4o": {}
+                }
+            }
+        });
+
+        let models = extract_models_for_provider(&payload, ProviderKind::OpenAI).expect("models");
+        assert_eq!(models, vec!["gpt-4.1".to_string(), "gpt-4o".to_string()]);
+    }
+
+    #[test]
+    fn extract_models_for_provider_uses_google_for_gemini() {
+        let payload = serde_json::json!({
+            "google": {
+                "models": {
+                    "gemini-2.5-pro": { "id": "gemini-2.5-pro" },
+                    "gemini-2.5-flash": { "id": "gemini-2.5-flash" }
+                }
+            }
+        });
+
+        let models = extract_models_for_provider(&payload, ProviderKind::Gemini).expect("models");
+        assert_eq!(
+            models,
+            vec!["gemini-2.5-flash".to_string(), "gemini-2.5-pro".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_models_for_provider_reports_missing_provider() {
+        let payload = serde_json::json!({
+            "openai": { "models": {} }
+        });
+
+        let err = extract_models_for_provider(&payload, ProviderKind::Anthropic)
+            .expect_err("expected missing provider error");
+        assert!(err.contains("provider not found"));
+    }
+
+    #[test]
+    fn extract_models_from_schema_reads_provider_prefixed_ids() {
+        let payload = serde_json::json!({
+            "$defs": {
+                "Model": {
+                    "enum": [
+                        "openai/gpt-4.1",
+                        "openai/gpt-4o",
+                        "anthropic/claude-sonnet-4-5"
+                    ]
+                }
+            }
+        });
+
+        let models = extract_models_from_schema(&payload, ProviderKind::OpenAI).expect("models");
+        assert_eq!(models, vec!["gpt-4.1".to_string(), "gpt-4o".to_string()]);
+    }
+
+    #[test]
+    fn extract_models_from_schema_uses_google_for_gemini() {
+        let payload = serde_json::json!({
+            "$defs": {
+                "Model": {
+                    "enum": [
+                        "google/gemini-2.5-pro",
+                        "google/gemini-2.5-flash"
+                    ]
+                }
+            }
+        });
+
+        let models = extract_models_from_schema(&payload, ProviderKind::Gemini).expect("models");
+        assert_eq!(
+            models,
+            vec!["gemini-2.5-flash".to_string(), "gemini-2.5-pro".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_models_from_schema_reports_missing_enum() {
+        let payload = serde_json::json!({
+            "$defs": {}
+        });
+
+        let err = extract_models_from_schema(&payload, ProviderKind::OpenAI)
+            .expect_err("expected missing schema enum error");
+        assert!(err.contains("schema missing"));
     }
 }

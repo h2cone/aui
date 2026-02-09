@@ -15,6 +15,7 @@ use crate::providers::{
     ProviderKind, ProviderStream, SessionStatus, UserMessage,
 };
 
+#[derive(Clone)]
 pub struct ProviderGateway {
     providers: Vec<ProviderInfo>,
 }

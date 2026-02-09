@@ -25,6 +25,14 @@ pub fn render_top_bar(
     let model_label = active_session
         .map(|session| SharedString::from(text::ellipsize(session.model.as_ref(), 42)))
         .unwrap_or_else(|| SharedString::from("Model"));
+    let model_refreshing = active_session
+        .map(|session| view.model_refreshing(session.provider.kind))
+        .unwrap_or(false);
+    let refresh_label = if model_refreshing {
+        SharedString::from("Refreshing...")
+    } else {
+        SharedString::from("Refresh")
+    };
 
     let settings_bg = if view.settings_open() {
         theme::accent_bg()
@@ -118,6 +126,25 @@ pub fn render_top_bar(
                             .into_any_element()
                     } else {
                         chip(model_label.clone()).into_any_element()
+                    }
+                })
+                .child({
+                    let style = chip(refresh_label.clone());
+                    if model_refreshing {
+                        style
+                            .bg(theme::accent_bg())
+                            .text_color(theme::text())
+                            .into_any_element()
+                    } else if active_id.is_some() {
+                        style
+                            .cursor(CursorStyle::PointingHand)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, _, cx| view.refresh_active_model_catalog(cx)),
+                            )
+                            .into_any_element()
+                    } else {
+                        style.text_color(theme::subtle_text()).into_any_element()
                     }
                 }),
         )

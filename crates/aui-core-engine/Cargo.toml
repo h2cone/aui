@@ -1,0 +1,8 @@
+[package]
+name = "aui-core-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aui-core-domain = { path = "../aui-core-domain" }
+aui-core-ports = { path = "../aui-core-ports" }

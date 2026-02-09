@@ -1,0 +1,12 @@
+[package]
+name = "aui-ui-tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aui-bridge = { path = "../aui-bridge" }
+aui-core-domain = { path = "../aui-core-domain" }
+aui-core-engine = { path = "../aui-core-engine" }
+aui-core-ports = { path = "../aui-core-ports" }
+aui-runtime-native = { path = "../aui-runtime-native" }
+serde_json = "1.0"

@@ -11,6 +11,14 @@ use gpui::{
     hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb,
 };
 
+use aui_core_domain::{
+    ProviderInfo as CoreProviderInfo, ProviderKind as CoreProviderKind, SessionId as CoreSessionId,
+    SessionStatus as CoreSessionStatus,
+};
+use aui_core_engine::Command as CoreCommand;
+use aui_core_ports::{ProviderPort, ProviderResponseStream};
+use aui_runtime_native::{CoreRuntime, InMemoryCatalog, InMemoryStore};
+
 use crate::actions::{AttachFiles, ClearAttachments, ExportSession, Submit};
 use crate::config;
 use crate::logger;
@@ -31,13 +39,12 @@ pub struct AuiApp {
     pub text_input: Entity<TextInput>,
     pub model_input: Entity<TextInput>,
     sessions: SessionManager,
+    core_runtime: CoreRuntime,
     gateway: ProviderGateway,
     attachments: Vec<Attachment>,
     new_session_provider_id: Arc<str>,
     storage: SessionStorage,
     stream_targets: HashMap<SessionId, usize>,
-    dirty_sessions: HashSet<SessionId>,
-    persist_generation: u64,
     diff_decisions: HashMap<DiffKey, DiffDecision>,
     shell_collapsed: HashMap<ShellKey, bool>,
     conversation_scroll: ScrollHandle,
@@ -118,7 +125,206 @@ fn session_to_provider_history(session: &Session) -> Vec<ConversationMessage> {
         .collect()
 }
 
+#[derive(Clone)]
+struct GuiProviderPort {
+    gateway: ProviderGateway,
+}
+
+impl GuiProviderPort {
+    fn new(gateway: ProviderGateway) -> Self {
+        Self { gateway }
+    }
+}
+
+impl ProviderPort for GuiProviderPort {
+    fn providers(&self) -> Vec<CoreProviderInfo> {
+        self.gateway
+            .providers()
+            .iter()
+            .map(|provider| {
+                CoreProviderInfo::new(
+                    provider.id.as_ref().to_string(),
+                    provider.name.as_ref().to_string(),
+                    match provider.kind {
+                        ProviderKind::Anthropic => CoreProviderKind::Anthropic,
+                        ProviderKind::OpenAI => CoreProviderKind::OpenAI,
+                        ProviderKind::Gemini => CoreProviderKind::Gemini,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn send(
+        &self,
+        provider: &CoreProviderInfo,
+        request: aui_core_domain::ProviderRequest,
+    ) -> ProviderResponseStream {
+        let native_provider = ProviderInfo::new(
+            provider.id.clone(),
+            provider.name.clone(),
+            match provider.kind {
+                CoreProviderKind::Anthropic => ProviderKind::Anthropic,
+                CoreProviderKind::OpenAI => ProviderKind::OpenAI,
+                CoreProviderKind::Gemini => ProviderKind::Gemini,
+            },
+        );
+        let stream = self.gateway.connect(&native_provider).send(UserMessage {
+            history: request
+                .history
+                .into_iter()
+                .map(|msg| ConversationMessage {
+                    role: match msg.role {
+                        aui_core_domain::ConversationRole::System => ConversationRole::System,
+                        aui_core_domain::ConversationRole::User => ConversationRole::User,
+                        aui_core_domain::ConversationRole::Assistant => ConversationRole::Assistant,
+                    },
+                    content: SharedString::from(msg.content),
+                })
+                .collect(),
+            text: SharedString::from(request.text),
+            attachments: request
+                .attachments
+                .into_iter()
+                .map(|attachment| Attachment {
+                    name: attachment.name,
+                    path: attachment.path,
+                })
+                .collect(),
+            context: request
+                .context
+                .map(|context| WorkingContext { cwd: context.cwd }),
+            model: SharedString::from(request.model),
+        });
+
+        let mut events = Vec::new();
+        while let Ok(event) = stream.events.recv() {
+            let core_event = match event {
+                ProviderEvent::TextDelta(delta) => aui_core_ports::ProviderEvent::TextDelta(delta),
+                ProviderEvent::ToolStart { name, input } => {
+                    aui_core_ports::ProviderEvent::ToolStart { name, input }
+                }
+                ProviderEvent::ToolResult { name, output } => {
+                    aui_core_ports::ProviderEvent::ToolResult { name, output }
+                }
+                ProviderEvent::TokenUsage { input, output } => {
+                    aui_core_ports::ProviderEvent::TokenUsage { input, output }
+                }
+                ProviderEvent::Done => aui_core_ports::ProviderEvent::Done,
+                ProviderEvent::Error(message) => aui_core_ports::ProviderEvent::Error(message),
+            };
+            let terminal = matches!(
+                core_event,
+                aui_core_ports::ProviderEvent::Done | aui_core_ports::ProviderEvent::Error(_)
+            );
+            events.push(core_event);
+            if terminal {
+                break;
+            }
+        }
+
+        ProviderResponseStream { events }
+    }
+}
+
 impl AuiApp {
+    fn sync_sessions_from_core(&mut self, preserve_streaming: bool) {
+        let mut rebuilt = SessionManager::new();
+        for core in self.core_runtime.state().sessions() {
+            let provider = ProviderInfo::new(
+                core.provider.id.clone(),
+                core.provider.name.clone(),
+                match core.provider.kind {
+                    CoreProviderKind::Anthropic => ProviderKind::Anthropic,
+                    CoreProviderKind::OpenAI => ProviderKind::OpenAI,
+                    CoreProviderKind::Gemini => ProviderKind::Gemini,
+                },
+            );
+
+            let mut messages = Vec::with_capacity(core.messages.len());
+            for message in &core.messages {
+                let mut content = message.content.clone();
+                if preserve_streaming
+                    && core.status == CoreSessionStatus::Thinking
+                    && matches!(message.role, aui_core_domain::SessionRole::Assistant)
+                {
+                    content = content.clone();
+                }
+                messages.push(crate::session::SessionMessage {
+                    role: match message.role {
+                        aui_core_domain::SessionRole::User => SessionRole::User,
+                        aui_core_domain::SessionRole::Assistant => SessionRole::Assistant,
+                        aui_core_domain::SessionRole::Tool => SessionRole::Tool,
+                    },
+                    content: if preserve_streaming
+                        && core.status == CoreSessionStatus::Thinking
+                        && matches!(message.role, aui_core_domain::SessionRole::Assistant)
+                    {
+                        SessionContent::streaming(content)
+                    } else {
+                        SessionContent::text(content)
+                    },
+                    timestamp: message.timestamp,
+                });
+            }
+
+            rebuilt.restore_session(Session {
+                id: SessionId::new(core.id.value()),
+                title: SharedString::from(core.title.clone()),
+                provider,
+                model: SharedString::from(core.model.clone()),
+                status: match &core.status {
+                    CoreSessionStatus::Idle => SessionStatus::Idle,
+                    CoreSessionStatus::Thinking => SessionStatus::Thinking,
+                    CoreSessionStatus::Executing { tool } => {
+                        SessionStatus::Executing { tool: tool.clone() }
+                    }
+                    CoreSessionStatus::WaitingInput { prompt } => SessionStatus::WaitingInput {
+                        prompt: SharedString::from(prompt.clone()),
+                    },
+                    CoreSessionStatus::Error { message } => SessionStatus::Error {
+                        message: SharedString::from(message.clone()),
+                    },
+                },
+                stats: crate::session::SessionStats {
+                    tokens_in: core.stats.tokens_in,
+                    tokens_out: core.stats.tokens_out,
+                    cost_usd: core.stats.cost_usd,
+                    started_at: core.stats.started_at,
+                },
+                messages,
+            });
+        }
+
+        if let Some(active_id) = self.core_runtime.state().active_id() {
+            rebuilt.set_active(SessionId::new(active_id.value()));
+        }
+
+        self.sessions = rebuilt;
+        self.stream_targets.clear();
+        if preserve_streaming {
+            for session in self.sessions.sessions() {
+                if session.status != SessionStatus::Thinking {
+                    continue;
+                }
+                if let Some(index) = session
+                    .messages
+                    .iter()
+                    .rposition(|msg| matches!(msg.content, SessionContent::Streaming(_)))
+                {
+                    self.stream_targets.insert(session.id, index);
+                }
+            }
+        }
+    }
+
+    fn dispatch_core_and_sync(&mut self, command: CoreCommand, preserve_streaming: bool) {
+        if let Err(err) = self.core_runtime.dispatch(command) {
+            logger::warn(&format!("core runtime dispatch failed: {err}"));
+        }
+        self.sync_sessions_from_core(preserve_streaming);
+    }
+
     pub fn new(cx: &mut Context<Self>) -> Self {
         logger::info("app init");
         let text_input = cx.new(|cx| TextInput::new(cx));
@@ -149,6 +355,15 @@ impl AuiApp {
         model_catalog: ModelCatalog,
         start_model_refresh: bool,
     ) -> Self {
+        let core_provider = GuiProviderPort::new(gateway.clone());
+        let core_store = InMemoryStore::default();
+        let core_catalog = InMemoryCatalog::default();
+        let core_runtime = CoreRuntime::new(
+            Box::new(core_provider),
+            Box::new(core_store),
+            Box::new(core_catalog),
+        );
+
         let mut sessions = SessionManager::new();
         let conversation_scroll = ScrollHandle::new();
         logger::debug("restoring sessions");
@@ -199,13 +414,12 @@ impl AuiApp {
             text_input,
             model_input,
             sessions,
+            core_runtime,
             gateway,
             attachments: Vec::new(),
             new_session_provider_id,
             storage,
             stream_targets: HashMap::new(),
-            dirty_sessions: HashSet::new(),
-            persist_generation: 0,
             diff_decisions,
             shell_collapsed: HashMap::new(),
             conversation_scroll,
@@ -217,6 +431,69 @@ impl AuiApp {
             settings_open: false,
             settings_show_all_models: false,
         };
+
+        let restored_core_sessions: Vec<aui_core_domain::Session> = app
+            .sessions
+            .sessions()
+            .iter()
+            .map(|session| aui_core_domain::Session {
+                id: CoreSessionId::new(session.id.value()),
+                title: session.title.as_ref().to_string(),
+                provider: CoreProviderInfo::new(
+                    session.provider.id.as_ref().to_string(),
+                    session.provider.name.as_ref().to_string(),
+                    match session.provider.kind {
+                        ProviderKind::Anthropic => CoreProviderKind::Anthropic,
+                        ProviderKind::OpenAI => CoreProviderKind::OpenAI,
+                        ProviderKind::Gemini => CoreProviderKind::Gemini,
+                    },
+                ),
+                model: session.model.as_ref().to_string(),
+                status: match &session.status {
+                    SessionStatus::Idle => CoreSessionStatus::Idle,
+                    SessionStatus::Thinking => CoreSessionStatus::Thinking,
+                    SessionStatus::Executing { tool } => {
+                        CoreSessionStatus::Executing { tool: tool.clone() }
+                    }
+                    SessionStatus::WaitingInput { prompt } => CoreSessionStatus::WaitingInput {
+                        prompt: prompt.as_ref().to_string(),
+                    },
+                    SessionStatus::Error { message } => CoreSessionStatus::Error {
+                        message: message.as_ref().to_string(),
+                    },
+                },
+                stats: aui_core_domain::SessionStats {
+                    tokens_in: session.stats.tokens_in,
+                    tokens_out: session.stats.tokens_out,
+                    cost_usd: session.stats.cost_usd,
+                    started_at: session.stats.started_at,
+                },
+                messages: session
+                    .messages
+                    .iter()
+                    .map(|message| aui_core_domain::SessionMessage {
+                        role: match message.role {
+                            SessionRole::User => aui_core_domain::SessionRole::User,
+                            SessionRole::Assistant => aui_core_domain::SessionRole::Assistant,
+                            SessionRole::Tool => aui_core_domain::SessionRole::Tool,
+                        },
+                        content: message.content.as_str().to_string(),
+                        timestamp: message.timestamp,
+                    })
+                    .collect(),
+            })
+            .collect();
+        let active_core_id = app
+            .sessions
+            .active_id()
+            .map(|id| CoreSessionId::new(id.value()));
+        app.dispatch_core_and_sync(
+            CoreCommand::RestoreSessions {
+                sessions: restored_core_sessions,
+                active_id: active_core_id,
+            },
+            false,
+        );
 
         if start_model_refresh {
             app.start_model_catalog_refresh(cx);
@@ -388,7 +665,12 @@ impl AuiApp {
 
     pub fn select_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
         logger::debug(&format!("session select id={}", id.value()));
-        self.sessions.set_active(id);
+        self.dispatch_core_and_sync(
+            CoreCommand::SelectSession {
+                id: CoreSessionId::new(id.value()),
+            },
+            false,
+        );
         self.conversation_scroll.scroll_to_bottom();
         if let Some(session) = self.sessions.session(id) {
             let kind = session.provider.kind;
@@ -407,7 +689,26 @@ impl AuiApp {
             .provider_by_id(self.new_session_provider_id.as_ref())
             .unwrap_or_else(|| select_provider(&self.gateway, ProviderKind::Anthropic));
         let model = default_model_for(&self.model_catalog, provider.kind);
-        let id = self.sessions.create_session(title, provider, model);
+        self.dispatch_core_and_sync(
+            CoreCommand::CreateSession {
+                title,
+                provider: CoreProviderInfo::new(
+                    provider.id.as_ref().to_string(),
+                    provider.name.as_ref().to_string(),
+                    match provider.kind {
+                        ProviderKind::Anthropic => CoreProviderKind::Anthropic,
+                        ProviderKind::OpenAI => CoreProviderKind::OpenAI,
+                        ProviderKind::Gemini => CoreProviderKind::Gemini,
+                    },
+                ),
+                model: model.as_ref().to_string(),
+            },
+            false,
+        );
+        let Some(id) = self.sessions.active_id() else {
+            cx.notify();
+            return;
+        };
         if let Some(session) = self.sessions.session(id) {
             let kind = session.provider.kind;
             if should_refresh(self.model_catalog.updated_at(kind)) {
@@ -422,8 +723,12 @@ impl AuiApp {
                 .map(|session| session.provider.id.as_ref())
                 .unwrap_or("unknown")
         ));
-        self.sessions
-            .append_message(id, SessionRole::Assistant, "New session ready.");
+        self.dispatch_core_and_sync(
+            CoreCommand::BeginUserMessage {
+                text: "New session ready.".to_string(),
+            },
+            false,
+        );
         self.persist_sessions_immediate([id]);
         self.conversation_scroll.scroll_to_bottom();
         cx.notify();
@@ -452,7 +757,7 @@ impl AuiApp {
 
     pub fn cycle_session_provider(&mut self, id: SessionId, cx: &mut Context<Self>) {
         let providers = self.gateway.providers();
-        let Some(session) = self.sessions.session_mut(id) else {
+        let Some(session) = self.sessions.session(id) else {
             return;
         };
         if providers.is_empty() {
@@ -463,9 +768,32 @@ impl AuiApp {
             .position(|provider| provider.id == session.provider.id)
             .unwrap_or(0);
         let next_ix = (current_ix + 1) % providers.len();
-        session.provider = providers[next_ix].clone();
-        session.model = default_model_for(&self.model_catalog, session.provider.kind);
-        let kind = session.provider.kind;
+        let next_provider = providers[next_ix].clone();
+        let next_model = default_model_for(&self.model_catalog, next_provider.kind);
+        self.dispatch_core_and_sync(
+            CoreCommand::SetSessionProvider {
+                id: CoreSessionId::new(id.value()),
+                provider: CoreProviderInfo::new(
+                    next_provider.id.as_ref().to_string(),
+                    next_provider.name.as_ref().to_string(),
+                    match next_provider.kind {
+                        ProviderKind::Anthropic => CoreProviderKind::Anthropic,
+                        ProviderKind::OpenAI => CoreProviderKind::OpenAI,
+                        ProviderKind::Gemini => CoreProviderKind::Gemini,
+                    },
+                ),
+            },
+            false,
+        );
+        self.dispatch_core_and_sync(
+            CoreCommand::SetSessionModel {
+                id: CoreSessionId::new(id.value()),
+                model: next_model.as_ref().to_string(),
+            },
+            false,
+        );
+
+        let kind = next_provider.kind;
         if should_refresh(self.model_catalog.updated_at(kind)) {
             self.refresh_model_catalog(kind, false, cx);
         }
@@ -474,13 +802,20 @@ impl AuiApp {
     }
 
     pub fn cycle_session_model(&mut self, id: SessionId, cx: &mut Context<Self>) {
-        let Some(session) = self.sessions.session_mut(id) else {
+        let Some(session) = self.sessions.session(id) else {
             return;
         };
-        session.model = next_model_for(
+        let next_model = next_model_for(
             &self.model_catalog,
             session.provider.kind,
             session.model.as_ref(),
+        );
+        self.dispatch_core_and_sync(
+            CoreCommand::SetSessionModel {
+                id: CoreSessionId::new(id.value()),
+                model: next_model.as_ref().to_string(),
+            },
+            false,
         );
         self.persist_sessions_immediate([id]);
         cx.notify();
@@ -500,11 +835,7 @@ impl AuiApp {
         if trimmed.is_empty() {
             return;
         }
-        if let Some(session) = self.sessions.session_mut(active_id) {
-            session.model = SharedString::from(trimmed.to_string());
-        }
-        self.persist_sessions_immediate([active_id]);
-        cx.notify();
+        self.set_session_model(active_id, trimmed, cx);
     }
 
     pub fn refresh_active_model_catalog(&mut self, cx: &mut Context<Self>) {
@@ -537,10 +868,16 @@ impl AuiApp {
         if trimmed.is_empty() {
             return;
         }
-        let Some(session) = self.sessions.session_mut(id) else {
+        if self.sessions.session(id).is_none() {
             return;
-        };
-        session.model = SharedString::from(trimmed.to_string());
+        }
+        self.dispatch_core_and_sync(
+            CoreCommand::SetSessionModel {
+                id: CoreSessionId::new(id.value()),
+                model: trimmed.to_string(),
+            },
+            false,
+        );
         self.persist_sessions_immediate([id]);
         cx.notify();
     }
@@ -646,9 +983,15 @@ impl AuiApp {
     }
 
     pub fn delete_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
-        if !self.sessions.remove_session(id) {
+        if self.sessions.session(id).is_none() {
             return;
         }
+        self.dispatch_core_and_sync(
+            CoreCommand::DeleteSession {
+                id: CoreSessionId::new(id.value()),
+            },
+            false,
+        );
         self.stream_targets.remove(&id);
         self.diff_decisions.retain(|key, _| key.session_id != id);
         self.shell_collapsed.retain(|key, _| key.session_id != id);
@@ -687,12 +1030,6 @@ impl AuiApp {
             return;
         };
 
-        let history: Vec<ConversationMessage> = self
-            .sessions
-            .session(active_id)
-            .map(session_to_provider_history)
-            .unwrap_or_default();
-
         let user_text_len = message.as_ref().len();
         logger::debug(&format!(
             "submit message session={} len={} attachments={}",
@@ -700,23 +1037,22 @@ impl AuiApp {
             user_text_len,
             self.attachments.len()
         ));
-        self.sessions
-            .append_message(active_id, SessionRole::User, message.clone());
 
-        let assistant_index = self.sessions.push_message(
-            active_id,
-            SessionRole::Assistant,
-            SessionContent::streaming(""),
+        self.dispatch_core_and_sync(
+            CoreCommand::StartUserTurn {
+                text: message.to_string(),
+            },
+            true,
         );
-        if let Some(index) = assistant_index {
-            self.stream_targets.insert(active_id, index);
-        }
         self.conversation_scroll.scroll_to_bottom();
-
-        self.sessions.set_status(active_id, SessionStatus::Thinking);
         self.persist_sessions_immediate([active_id]);
         cx.notify();
 
+        let history: Vec<ConversationMessage> = self
+            .sessions
+            .session(active_id)
+            .map(session_to_provider_history)
+            .unwrap_or_default();
         let (provider, model) = self
             .sessions
             .session(active_id)
@@ -726,12 +1062,12 @@ impl AuiApp {
                 let model = default_model_for(&self.model_catalog, provider.kind);
                 (provider, model)
             });
+        let attachments = std::mem::take(&mut self.attachments);
         logger::debug(&format!(
             "provider send session={} provider={}",
             active_id.value(),
             provider.id.as_ref()
         ));
-        let attachments = std::mem::take(&mut self.attachments);
         let stream = self.gateway.connect(&provider).send(UserMessage {
             history,
             text: message,
@@ -751,7 +1087,30 @@ impl AuiApp {
                     let is_terminal =
                         matches!(event, ProviderEvent::Done | ProviderEvent::Error(_));
                     let _ = handle.update(cx, |view, cx| {
-                        view.apply_stream_event(active_id, event, cx);
+                        view.dispatch_core_and_sync(
+                            CoreCommand::ReceiveProviderEvent {
+                                session_id: CoreSessionId::new(active_id.value()),
+                                event: match event {
+                                    ProviderEvent::TextDelta(delta) => {
+                                        aui_core_ports::ProviderEvent::TextDelta(delta)
+                                    }
+                                    ProviderEvent::ToolStart { name, input } => {
+                                        aui_core_ports::ProviderEvent::ToolStart { name, input }
+                                    }
+                                    ProviderEvent::ToolResult { name, output } => {
+                                        aui_core_ports::ProviderEvent::ToolResult { name, output }
+                                    }
+                                    ProviderEvent::TokenUsage { input, output } => {
+                                        aui_core_ports::ProviderEvent::TokenUsage { input, output }
+                                    }
+                                    ProviderEvent::Done => aui_core_ports::ProviderEvent::Done,
+                                    ProviderEvent::Error(message) => {
+                                        aui_core_ports::ProviderEvent::Error(message)
+                                    }
+                                },
+                            },
+                            true,
+                        );
                         cx.notify();
                     });
                     if is_terminal {
@@ -793,166 +1152,6 @@ impl AuiApp {
         cx: &mut Context<Self>,
     ) {
         self.export_active_session(window, cx);
-    }
-
-    fn apply_stream_event(&mut self, id: SessionId, event: ProviderEvent, cx: &mut Context<Self>) {
-        match event {
-            ProviderEvent::TextDelta(delta) => {
-                logger::debug(&format!(
-                    "stream delta session={} len={}",
-                    id.value(),
-                    delta.len()
-                ));
-                if let Some(index) = self.stream_targets.get(&id).copied() {
-                    if let Some(session) = self.sessions.session_mut(id) {
-                        if let Some(message) = session.messages.get_mut(index) {
-                            message.content.push_str(&delta);
-                        }
-                    }
-                }
-                self.persist_session_debounced(id, cx);
-                self.conversation_scroll.scroll_to_bottom();
-            }
-            ProviderEvent::ToolStart { name, input } => {
-                logger::debug(&format!(
-                    "stream tool start session={} tool={} len={}",
-                    id.value(),
-                    name.as_str(),
-                    input.len()
-                ));
-                self.sessions.push_message(
-                    id,
-                    SessionRole::Tool,
-                    format!("Tool call: {name}\n{input}"),
-                );
-                self.persist_sessions_immediate([id]);
-                self.conversation_scroll.scroll_to_bottom();
-            }
-            ProviderEvent::ToolResult { name, output } => {
-                logger::debug(&format!(
-                    "stream tool result session={} tool={} len={}",
-                    id.value(),
-                    name.as_str(),
-                    output.len()
-                ));
-                self.sessions.push_message(
-                    id,
-                    SessionRole::Tool,
-                    format!("Tool output: {name}\n{output}"),
-                );
-                self.persist_sessions_immediate([id]);
-                self.conversation_scroll.scroll_to_bottom();
-            }
-            ProviderEvent::TokenUsage { input, output } => {
-                logger::debug(&format!(
-                    "stream token usage session={} in={} out={}",
-                    id.value(),
-                    input,
-                    output
-                ));
-                let kind = self
-                    .sessions
-                    .session(id)
-                    .map(|session| session.provider.kind)
-                    .unwrap_or(ProviderKind::Anthropic);
-                let cost = estimate_cost_usd(kind, input, output);
-                self.sessions.bump_usage(id, input, output, cost);
-                self.persist_session_debounced(id, cx);
-            }
-            ProviderEvent::Done => {
-                logger::debug(&format!("stream done session={}", id.value()));
-                if let Some(index) = self.stream_targets.remove(&id) {
-                    if let Some(session) = self.sessions.session_mut(id) {
-                        if let Some(message) = session.messages.get_mut(index) {
-                            message.content.finalize();
-                        }
-                    }
-                }
-                self.sessions.set_status(id, SessionStatus::Idle);
-                self.persist_sessions_immediate([id]);
-                self.conversation_scroll.scroll_to_bottom();
-            }
-            ProviderEvent::Error(message) => {
-                logger::warn(&format!(
-                    "stream error session={} message={}",
-                    id.value(),
-                    message.as_str()
-                ));
-                if let Some(index) = self.stream_targets.remove(&id) {
-                    if let Some(session) = self.sessions.session_mut(id) {
-                        if let Some(message) = session.messages.get_mut(index) {
-                            message.content.finalize();
-                        }
-                    }
-                }
-                if let Some(fallback) = self.handle_invalid_model(id, &message, cx) {
-                    self.sessions
-                        .set_status(id, SessionStatus::Error { message: fallback });
-                    self.persist_sessions_immediate([id]);
-                    self.conversation_scroll.scroll_to_bottom();
-                } else {
-                    let user_message = friendly_error_message(&message);
-                    self.sessions.set_status(
-                        id,
-                        SessionStatus::Error {
-                            message: user_message,
-                        },
-                    );
-                    self.persist_sessions_immediate([id]);
-                    self.conversation_scroll.scroll_to_bottom();
-                }
-            }
-        }
-    }
-
-    fn handle_invalid_model(
-        &mut self,
-        id: SessionId,
-        raw: &str,
-        cx: &mut Context<Self>,
-    ) -> Option<SharedString> {
-        if !is_model_unavailable(raw) {
-            return None;
-        }
-        let session = self.sessions.session_mut(id)?;
-        let current = session.model.clone();
-        let options = model_options_for(&self.model_catalog, session.provider.kind);
-        let fallback = options
-            .into_iter()
-            .find(|option| option.as_ref() != current.as_ref())
-            .unwrap_or_else(|| default_model_for(&self.model_catalog, session.provider.kind));
-        if fallback.as_ref() == current.as_ref() {
-            return None;
-        }
-        let user_message = SharedString::from(format!(
-            "Model '{}' is unavailable. Switched to '{}'. Please retry.",
-            current.as_ref(),
-            fallback.as_ref()
-        ));
-        session.model = fallback;
-        self.persist_sessions_immediate([id]);
-        cx.notify();
-        Some(user_message)
-    }
-
-    fn persist_session_debounced(&mut self, id: SessionId, cx: &mut Context<Self>) {
-        const DEBOUNCE: Duration = Duration::from_millis(450);
-
-        self.dirty_sessions.insert(id);
-        self.persist_generation = self.persist_generation.wrapping_add(1);
-        let generation = self.persist_generation;
-        let handle = cx.entity().downgrade();
-        gpui::App::spawn(cx, async move |cx| {
-            gpui::Timer::after(DEBOUNCE).await;
-            let _ = handle.update(cx, |view, _cx| {
-                if view.persist_generation != generation {
-                    return;
-                }
-                let ids: Vec<SessionId> = view.dirty_sessions.drain().collect();
-                view.persist_sessions_immediate(ids);
-            });
-        })
-        .detach();
     }
 
     fn persist_sessions_immediate(&mut self, ids: impl IntoIterator<Item = SessionId>) {
@@ -1177,48 +1376,6 @@ fn write_text_file(path: &Path, contents: &str) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     fs::write(path, contents).map_err(|err| err.to_string())
-}
-
-fn estimate_cost_usd(kind: ProviderKind, input_tokens: u32, output_tokens: u32) -> f32 {
-    let (in_rate, out_rate) = cost_rates_for(kind);
-    if in_rate <= 0.0 && out_rate <= 0.0 {
-        return 0.0;
-    }
-    let input_cost = (input_tokens as f32 / 1_000_000.0) * in_rate;
-    let output_cost = (output_tokens as f32 / 1_000_000.0) * out_rate;
-    input_cost + output_cost
-}
-
-fn cost_rates_for(kind: ProviderKind) -> (f32, f32) {
-    let (default_in, default_out) = match kind {
-        ProviderKind::Anthropic => (0.0, 0.0),
-        ProviderKind::OpenAI => (0.0, 0.0),
-        ProviderKind::Gemini => (0.0, 0.0),
-    };
-
-    let prefix = match kind {
-        ProviderKind::Anthropic => "ANTHROPIC",
-        ProviderKind::OpenAI => "OPENAI",
-        ProviderKind::Gemini => "GEMINI",
-    };
-
-    let in_key = format!("{prefix}_COST_IN_PER_MILLION");
-    let out_key = format!("{prefix}_COST_OUT_PER_MILLION");
-    let global_in = "AUI_COST_IN_PER_MILLION";
-    let global_out = "AUI_COST_OUT_PER_MILLION";
-
-    (
-        read_env_f32(&in_key)
-            .or_else(|| read_env_f32(global_in))
-            .unwrap_or(default_in),
-        read_env_f32(&out_key)
-            .or_else(|| read_env_f32(global_out))
-            .unwrap_or(default_out),
-    )
-}
-
-fn read_env_f32(key: &str) -> Option<f32> {
-    std::env::var(key).ok()?.trim().parse::<f32>().ok()
 }
 
 pub(crate) fn model_options_for(catalog: &ModelCatalog, kind: ProviderKind) -> Vec<SharedString> {
@@ -1739,36 +1896,6 @@ fn resolve_stored_provider(gateway: &ProviderGateway, stored: &StoredSession) ->
     select_provider(gateway, ProviderKind::Anthropic)
 }
 
-fn friendly_error_message(raw: &str) -> SharedString {
-    let message = raw.to_ascii_lowercase();
-    if message.contains("missing") && message.contains("api_key") {
-        return SharedString::from("Provider credentials are not configured.");
-    }
-    if message.contains("unauthorized") || message.contains("401") || message.contains("403") {
-        return SharedString::from("Provider authentication failed.");
-    }
-    if message.contains("timeout") {
-        return SharedString::from("Provider request timed out.");
-    }
-    if message.contains("http") {
-        return SharedString::from("Provider request failed. Check your network or settings.");
-    }
-    SharedString::from("Provider error. Check logs for details.")
-}
-
-fn is_model_unavailable(raw: &str) -> bool {
-    let message = raw.to_ascii_lowercase();
-    if !message.contains("model") {
-        return false;
-    }
-    message.contains("not found")
-        || message.contains("does not exist")
-        || message.contains("invalid")
-        || message.contains("unknown")
-        || message.contains("unsupported")
-        || message.contains("not available")
-}
-
 fn friendly_model_refresh_error(kind: ProviderKind, raw: &str) -> String {
     let message = raw.to_ascii_lowercase();
     if message.contains("missing") && message.contains("api_key") {
@@ -1958,6 +2085,95 @@ mod tests {
             view.new_session(cx);
             view.toggle_settings(cx);
             let _ = view.render(window, cx).into_any_element();
+        });
+    }
+
+    #[gpui::test]
+    fn gui_main_path_uses_runtime_for_session_lifecycle(cx: &mut TestAppContext) {
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+        let config = config::Config {
+            default_provider_id: "anthropic".to_string(),
+            debug: false,
+        };
+        let catalog = seeded_model_catalog();
+
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let text_input = cx.new(|cx| TextInput::new(cx));
+            let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model"));
+            let gateway = ProviderGateway::new();
+            AuiApp::new_with(
+                cx,
+                text_input,
+                model_input,
+                gateway,
+                config.clone(),
+                storage.clone(),
+                catalog.clone(),
+                false,
+            )
+        });
+
+        app.update_in(cx, |view, _window, cx| {
+            view.new_session(cx);
+            assert_eq!(view.sessions().len(), 1);
+            let id = view.active_session_id().expect("active id");
+            view.delete_session(id, cx);
+            assert!(view.sessions().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn gui_model_provider_changes_go_through_runtime(cx: &mut TestAppContext) {
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+        let config = config::Config {
+            default_provider_id: "anthropic".to_string(),
+            debug: false,
+        };
+        let catalog = seeded_model_catalog();
+
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let text_input = cx.new(|cx| TextInput::new(cx));
+            let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model"));
+            let gateway = ProviderGateway::new();
+            AuiApp::new_with(
+                cx,
+                text_input,
+                model_input,
+                gateway,
+                config.clone(),
+                storage.clone(),
+                catalog.clone(),
+                false,
+            )
+        });
+
+        app.update_in(cx, |view, _window, cx| {
+            view.new_session(cx);
+            let id = view.active_session_id().expect("active id");
+            let before = view
+                .active_session()
+                .expect("active")
+                .provider
+                .id
+                .as_ref()
+                .to_string();
+            view.cycle_session_provider(id, cx);
+            let after = view
+                .active_session()
+                .expect("active")
+                .provider
+                .id
+                .as_ref()
+                .to_string();
+            assert_ne!(before, after);
+
+            view.set_session_model(id, "runtime-model", cx);
+            assert_eq!(
+                view.active_session().expect("active").model.as_ref(),
+                "runtime-model"
+            );
         });
     }
 
