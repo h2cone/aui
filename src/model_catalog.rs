@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::config;
 use crate::logger;
-use crate::providers::ProviderKind;
+use aui_ai::ProviderKind;
 
 const CACHE_FILE: &str = "models.json";
 const CACHE_TTL: Duration = Duration::from_secs(60 * 60 * 6);

@@ -4,10 +4,10 @@ use gpui::{
 };
 
 use crate::app::AuiApp;
-use crate::providers::ProviderKind;
 use crate::session::Session;
 use crate::ui::text;
 use crate::ui::theme;
+use aui_ai::ProviderKind;
 
 pub fn render_settings_panel(
     view: &AuiApp,

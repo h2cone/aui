@@ -9,8 +9,7 @@ use std::time::Duration;
 use gpui::SharedString;
 use serde_json::Value;
 
-use crate::logger;
-use crate::providers::{
+use crate::{
     ConversationMessage, ConversationRole, ProviderClient, ProviderEvent, ProviderInfo,
     ProviderKind, ProviderStream, SessionStatus, UserMessage,
 };
@@ -22,11 +21,7 @@ pub struct ProviderGateway {
 
 impl ProviderGateway {
     pub fn new() -> Self {
-        let providers = crate::providers::registry::available_providers();
-        logger::debug(&format!(
-            "provider gateway init providers={} transport=rust",
-            providers.len()
-        ));
+        let providers = crate::registry::available_providers();
         Self { providers }
     }
 
@@ -35,7 +30,7 @@ impl ProviderGateway {
     }
 
     pub fn provider_by_id(&self, id: &str) -> Option<ProviderInfo> {
-        let id = crate::providers::registry::canonicalize_provider_id(id);
+        let id = crate::registry::canonicalize_provider_id(id);
         self.providers
             .iter()
             .find(|provider| provider.id.as_ref() == id.as_ref())
@@ -1277,7 +1272,7 @@ mod tests {
         let message = UserMessage {
             history: Vec::new(),
             text: SharedString::from("hi".to_string()),
-            attachments: vec![crate::providers::Attachment {
+            attachments: vec![crate::Attachment {
                 name: "big.txt".to_string(),
                 path: Some(path),
             }],

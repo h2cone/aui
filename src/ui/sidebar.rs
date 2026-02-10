@@ -4,8 +4,8 @@ use gpui::{
 };
 
 use crate::app::AuiApp;
-use crate::providers::SessionStatus;
 use crate::ui::theme;
+use aui_ai::SessionStatus;
 
 pub fn render_sidebar(view: &AuiApp, cx: &mut Context<AuiApp>) -> impl IntoElement {
     let active_id = view.active_session_id();

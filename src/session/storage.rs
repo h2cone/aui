@@ -260,8 +260,8 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::providers::{ProviderInfo, ProviderKind, SessionStatus};
     use crate::session::{Session, SessionContent, SessionMessage, SessionRole, SessionStats};
+    use aui_ai::{ProviderInfo, ProviderKind, SessionStatus};
 
     fn sample_session(id: u64) -> Session {
         let timestamp = UNIX_EPOCH + Duration::from_secs(123);

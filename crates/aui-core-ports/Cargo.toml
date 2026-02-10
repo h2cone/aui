@@ -1,7 +1,0 @@
-[package]
-name = "aui-core-ports"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-aui-core-domain = { path = "../aui-core-domain" }

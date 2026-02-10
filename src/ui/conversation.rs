@@ -1,6 +1,6 @@
 use gpui::{FontWeight, IntoElement, SharedString, div, hsla, prelude::*, px};
 
-use aui_core_domain::{MessageBlock, parse_blocks};
+use aui_agent_core::{MessageBlock, parse_blocks};
 
 use crate::app::{AuiApp, DiffKey};
 use crate::session::{Session, SessionRole};

@@ -1,8 +1,8 @@
 use gpui::{Context, CursorStyle, IntoElement, MouseButton, Window, div, hsla, prelude::*, px};
 
 use crate::app::AuiApp;
-use crate::providers::SessionStatus;
 use crate::ui::{conversation, input_box, scrollbar, settings_panel, sidebar, theme, top_bar};
+use aui_ai::SessionStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutMetrics {

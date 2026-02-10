@@ -2,7 +2,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use gpui::SharedString;
 
-use crate::providers::{ProviderInfo, SessionStatus};
+use aui_ai::{ProviderInfo, SessionStatus};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(u64);
@@ -293,7 +293,7 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ProviderInfo, ProviderKind};
+    use aui_ai::{ProviderInfo, ProviderKind};
 
     fn sample_provider() -> ProviderInfo {
         ProviderInfo::new("test", "Test Provider", ProviderKind::Anthropic)

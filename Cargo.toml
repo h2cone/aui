@@ -1,11 +1,8 @@
 [workspace]
 members = [
     ".",
-    "crates/aui-core-domain",
-    "crates/aui-core-ports",
-    "crates/aui-core-engine",
-    "crates/aui-runtime-native",
-    "crates/aui-bridge",
+    "crates/aui-ai",
+    "crates/aui-agent-core",
     "crates/aui-ui-tui",
     "crates/aui-ui-web",
 ]
@@ -16,10 +13,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-aui-core-domain = { path = "crates/aui-core-domain" }
-aui-core-engine = { path = "crates/aui-core-engine" }
-aui-core-ports = { path = "crates/aui-core-ports" }
-aui-runtime-native = { path = "crates/aui-runtime-native" }
+aui-ai = { path = "crates/aui-ai" }
+aui-agent-core = { path = "crates/aui-agent-core" }
 gpui = "0.2.2"
 unicode-segmentation = "1.12"
 serde = { version = "1.0", features = ["derive"] }

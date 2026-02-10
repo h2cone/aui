@@ -434,10 +434,8 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "aui"
 version = "0.1.0"
 dependencies = [
- "aui-core-domain",
- "aui-core-engine",
- "aui-core-ports",
- "aui-runtime-native",
+ "aui-agent-core",
+ "aui-ai",
  "gpui",
  "reqwest",
  "serde",
@@ -447,40 +445,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "aui-bridge"
+name = "aui-agent-core"
 version = "0.1.0"
 dependencies = [
- "aui-core-domain",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
-name = "aui-core-domain"
-version = "0.1.0"
-
-[[package]]
-name = "aui-core-engine"
+name = "aui-ai"
 version = "0.1.0"
 dependencies = [
- "aui-core-domain",
- "aui-core-ports",
-]
-
-[[package]]
-name = "aui-core-ports"
-version = "0.1.0"
-dependencies = [
- "aui-core-domain",
-]
-
-[[package]]
-name = "aui-runtime-native"
-version = "0.1.0"
-dependencies = [
- "aui-core-domain",
- "aui-core-engine",
- "aui-core-ports",
+ "gpui",
+ "reqwest",
+ "serde_json",
  "tempfile",
 ]
 
@@ -488,11 +467,7 @@ dependencies = [
 name = "aui-ui-tui"
 version = "0.1.0"
 dependencies = [
- "aui-bridge",
- "aui-core-domain",
- "aui-core-engine",
- "aui-core-ports",
- "aui-runtime-native",
+ "aui-agent-core",
  "serde_json",
 ]
 
@@ -500,11 +475,7 @@ dependencies = [
 name = "aui-ui-web"
 version = "0.1.0"
 dependencies = [
- "aui-bridge",
- "aui-core-domain",
- "aui-core-engine",
- "aui-core-ports",
- "aui-runtime-native",
+ "aui-agent-core",
  "aui-ui-tui",
  "serde_json",
 ]

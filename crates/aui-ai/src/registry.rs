@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::providers::{ProviderInfo, ProviderKind};
+use crate::{ProviderInfo, ProviderKind};
 
 pub fn available_providers() -> Vec<ProviderInfo> {
     vec![

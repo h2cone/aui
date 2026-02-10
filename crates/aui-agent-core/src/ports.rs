@@ -1,4 +1,4 @@
-use aui_core_domain::{ModelCatalog, ProviderInfo, ProviderRequest, Session, SessionId};
+use crate::{ModelCatalog, ProviderInfo, ProviderRequest, Session, SessionId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderEvent {
@@ -34,7 +34,7 @@ pub trait ModelCatalogPort: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aui_core_domain::{
+    use crate::{
         Attachment, ConversationMessage, ConversationRole, ProviderKind, SessionStats,
         SessionStatus, WorkingContext,
     };

@@ -7,6 +7,8 @@ use gpui::SharedString;
 pub mod gateway;
 pub mod registry;
 
+pub use gateway::ProviderGateway;
+
 #[derive(Clone, Debug)]
 pub struct ProviderInfo {
     pub id: Arc<str>,

@@ -11,23 +11,21 @@ use gpui::{
     hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb,
 };
 
-use aui_core_domain::{
-    ProviderInfo as CoreProviderInfo, ProviderKind as CoreProviderKind, SessionId as CoreSessionId,
-    SessionStatus as CoreSessionStatus,
+use aui_agent_core::{
+    Command as CoreCommand, CoreRuntime, InMemoryCatalog, InMemoryStore,
+    ProviderInfo as CoreProviderInfo, ProviderKind as CoreProviderKind, ProviderPort,
+    ProviderResponseStream, SessionId as CoreSessionId, SessionStatus as CoreSessionStatus,
 };
-use aui_core_engine::Command as CoreCommand;
-use aui_core_ports::{ProviderPort, ProviderResponseStream};
-use aui_runtime_native::{CoreRuntime, InMemoryCatalog, InMemoryStore};
+use aui_ai::ProviderGateway;
+use aui_ai::{
+    Attachment, ConversationMessage, ConversationRole, ProviderEvent, ProviderInfo, ProviderKind,
+    SessionStatus, UserMessage, WorkingContext,
+};
 
 use crate::actions::{AttachFiles, ClearAttachments, ExportSession, Submit};
 use crate::config;
 use crate::logger;
 use crate::model_catalog::{ModelCatalog, fetch_models, now_epoch_secs, should_refresh};
-use crate::providers::gateway::ProviderGateway;
-use crate::providers::{
-    Attachment, ConversationMessage, ConversationRole, ProviderEvent, ProviderInfo, ProviderKind,
-    SessionStatus, UserMessage, WorkingContext,
-};
 use crate::session::{
     Session, SessionContent, SessionId, SessionManager, SessionRole, SessionStorage,
     StoredDiffDecision, StoredSession,
@@ -158,7 +156,7 @@ impl ProviderPort for GuiProviderPort {
     fn send(
         &self,
         provider: &CoreProviderInfo,
-        request: aui_core_domain::ProviderRequest,
+        request: aui_agent_core::ProviderRequest,
     ) -> ProviderResponseStream {
         let native_provider = ProviderInfo::new(
             provider.id.clone(),
@@ -175,9 +173,9 @@ impl ProviderPort for GuiProviderPort {
                 .into_iter()
                 .map(|msg| ConversationMessage {
                     role: match msg.role {
-                        aui_core_domain::ConversationRole::System => ConversationRole::System,
-                        aui_core_domain::ConversationRole::User => ConversationRole::User,
-                        aui_core_domain::ConversationRole::Assistant => ConversationRole::Assistant,
+                        aui_agent_core::ConversationRole::System => ConversationRole::System,
+                        aui_agent_core::ConversationRole::User => ConversationRole::User,
+                        aui_agent_core::ConversationRole::Assistant => ConversationRole::Assistant,
                     },
                     content: SharedString::from(msg.content),
                 })
@@ -200,22 +198,22 @@ impl ProviderPort for GuiProviderPort {
         let mut events = Vec::new();
         while let Ok(event) = stream.events.recv() {
             let core_event = match event {
-                ProviderEvent::TextDelta(delta) => aui_core_ports::ProviderEvent::TextDelta(delta),
+                ProviderEvent::TextDelta(delta) => aui_agent_core::ProviderEvent::TextDelta(delta),
                 ProviderEvent::ToolStart { name, input } => {
-                    aui_core_ports::ProviderEvent::ToolStart { name, input }
+                    aui_agent_core::ProviderEvent::ToolStart { name, input }
                 }
                 ProviderEvent::ToolResult { name, output } => {
-                    aui_core_ports::ProviderEvent::ToolResult { name, output }
+                    aui_agent_core::ProviderEvent::ToolResult { name, output }
                 }
                 ProviderEvent::TokenUsage { input, output } => {
-                    aui_core_ports::ProviderEvent::TokenUsage { input, output }
+                    aui_agent_core::ProviderEvent::TokenUsage { input, output }
                 }
-                ProviderEvent::Done => aui_core_ports::ProviderEvent::Done,
-                ProviderEvent::Error(message) => aui_core_ports::ProviderEvent::Error(message),
+                ProviderEvent::Done => aui_agent_core::ProviderEvent::Done,
+                ProviderEvent::Error(message) => aui_agent_core::ProviderEvent::Error(message),
             };
             let terminal = matches!(
                 core_event,
-                aui_core_ports::ProviderEvent::Done | aui_core_ports::ProviderEvent::Error(_)
+                aui_agent_core::ProviderEvent::Done | aui_agent_core::ProviderEvent::Error(_)
             );
             events.push(core_event);
             if terminal {
@@ -246,19 +244,19 @@ impl AuiApp {
                 let mut content = message.content.clone();
                 if preserve_streaming
                     && core.status == CoreSessionStatus::Thinking
-                    && matches!(message.role, aui_core_domain::SessionRole::Assistant)
+                    && matches!(message.role, aui_agent_core::SessionRole::Assistant)
                 {
                     content = content.clone();
                 }
                 messages.push(crate::session::SessionMessage {
                     role: match message.role {
-                        aui_core_domain::SessionRole::User => SessionRole::User,
-                        aui_core_domain::SessionRole::Assistant => SessionRole::Assistant,
-                        aui_core_domain::SessionRole::Tool => SessionRole::Tool,
+                        aui_agent_core::SessionRole::User => SessionRole::User,
+                        aui_agent_core::SessionRole::Assistant => SessionRole::Assistant,
+                        aui_agent_core::SessionRole::Tool => SessionRole::Tool,
                     },
                     content: if preserve_streaming
                         && core.status == CoreSessionStatus::Thinking
-                        && matches!(message.role, aui_core_domain::SessionRole::Assistant)
+                        && matches!(message.role, aui_agent_core::SessionRole::Assistant)
                     {
                         SessionContent::streaming(content)
                     } else {
@@ -432,11 +430,11 @@ impl AuiApp {
             settings_show_all_models: false,
         };
 
-        let restored_core_sessions: Vec<aui_core_domain::Session> = app
+        let restored_core_sessions: Vec<aui_agent_core::Session> = app
             .sessions
             .sessions()
             .iter()
-            .map(|session| aui_core_domain::Session {
+            .map(|session| aui_agent_core::Session {
                 id: CoreSessionId::new(session.id.value()),
                 title: session.title.as_ref().to_string(),
                 provider: CoreProviderInfo::new(
@@ -462,7 +460,7 @@ impl AuiApp {
                         message: message.as_ref().to_string(),
                     },
                 },
-                stats: aui_core_domain::SessionStats {
+                stats: aui_agent_core::SessionStats {
                     tokens_in: session.stats.tokens_in,
                     tokens_out: session.stats.tokens_out,
                     cost_usd: session.stats.cost_usd,
@@ -471,11 +469,11 @@ impl AuiApp {
                 messages: session
                     .messages
                     .iter()
-                    .map(|message| aui_core_domain::SessionMessage {
+                    .map(|message| aui_agent_core::SessionMessage {
                         role: match message.role {
-                            SessionRole::User => aui_core_domain::SessionRole::User,
-                            SessionRole::Assistant => aui_core_domain::SessionRole::Assistant,
-                            SessionRole::Tool => aui_core_domain::SessionRole::Tool,
+                            SessionRole::User => aui_agent_core::SessionRole::User,
+                            SessionRole::Assistant => aui_agent_core::SessionRole::Assistant,
+                            SessionRole::Tool => aui_agent_core::SessionRole::Tool,
                         },
                         content: message.content.as_str().to_string(),
                         timestamp: message.timestamp,
@@ -1092,20 +1090,20 @@ impl AuiApp {
                                 session_id: CoreSessionId::new(active_id.value()),
                                 event: match event {
                                     ProviderEvent::TextDelta(delta) => {
-                                        aui_core_ports::ProviderEvent::TextDelta(delta)
+                                        aui_agent_core::ProviderEvent::TextDelta(delta)
                                     }
                                     ProviderEvent::ToolStart { name, input } => {
-                                        aui_core_ports::ProviderEvent::ToolStart { name, input }
+                                        aui_agent_core::ProviderEvent::ToolStart { name, input }
                                     }
                                     ProviderEvent::ToolResult { name, output } => {
-                                        aui_core_ports::ProviderEvent::ToolResult { name, output }
+                                        aui_agent_core::ProviderEvent::ToolResult { name, output }
                                     }
                                     ProviderEvent::TokenUsage { input, output } => {
-                                        aui_core_ports::ProviderEvent::TokenUsage { input, output }
+                                        aui_agent_core::ProviderEvent::TokenUsage { input, output }
                                     }
-                                    ProviderEvent::Done => aui_core_ports::ProviderEvent::Done,
+                                    ProviderEvent::Done => aui_agent_core::ProviderEvent::Done,
                                     ProviderEvent::Error(message) => {
-                                        aui_core_ports::ProviderEvent::Error(message)
+                                        aui_agent_core::ProviderEvent::Error(message)
                                     }
                                 },
                             },

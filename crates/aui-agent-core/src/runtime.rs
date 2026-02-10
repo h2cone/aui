@@ -1,6 +1,7 @@
-use aui_core_domain::{ModelCatalog, Session, SessionId};
-use aui_core_engine::{Command, CoreState, Effect};
-use aui_core_ports::{ModelCatalogPort, ProviderPort, SessionStorePort};
+use crate::{
+    Command, CoreState, Effect, ModelCatalog, ModelCatalogPort, ProviderPort, Session, SessionId,
+    SessionStorePort,
+};
 
 pub struct CoreRuntime {
     state: CoreState,
@@ -124,10 +125,10 @@ impl ModelCatalogPort for InMemoryCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aui_core_domain::{
+    use crate::{
         ModelCatalog, ProviderInfo, ProviderKind, ProviderRequest, SessionStats, SessionStatus,
     };
-    use aui_core_ports::{
+    use crate::{
         ModelCatalogPort, ProviderEvent, ProviderPort, ProviderResponseStream, SessionStorePort,
     };
     use std::sync::{Arc, Mutex};

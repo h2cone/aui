@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use aui_core_domain::{
+use crate::ProviderEvent;
+use crate::{
     Attachment, ConversationMessage, ConversationRole, ProviderInfo, ProviderRequest, Session,
     SessionId, SessionMessage, SessionRole, SessionStats, SessionStatus, WorkingContext,
 };
-use aui_core_ports::ProviderEvent;
 
 #[derive(Debug, Clone)]
 pub struct CoreState {
@@ -379,7 +379,7 @@ pub struct ReduceResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aui_core_domain::ProviderKind;
+    use crate::ProviderKind;
 
     fn provider() -> ProviderInfo {
         ProviderInfo::new("openai", "OpenAI", ProviderKind::OpenAI)

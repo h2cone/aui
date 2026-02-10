@@ -1,10 +1,10 @@
-use aui_bridge::{
+use aui_agent_core::Command;
+use aui_agent_core::CoreRuntime;
+use aui_agent_core::{
     BridgeCommand, BridgeEvent, convert_bridge_attachments, convert_context, parse_provider_kind,
     to_bridge_session,
 };
-use aui_core_domain::{ProviderInfo, SessionId};
-use aui_core_engine::Command;
-use aui_runtime_native::CoreRuntime;
+use aui_agent_core::{ProviderInfo, SessionId};
 
 pub struct TuiAdapter;
 
@@ -82,12 +82,12 @@ pub fn apply_bridge_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aui_bridge::BridgeAttachment;
-    use aui_core_domain::{ModelCatalog, ProviderKind, ProviderRequest, Session};
-    use aui_core_ports::{
+    use aui_agent_core::BridgeAttachment;
+    use aui_agent_core::CoreRuntime;
+    use aui_agent_core::{ModelCatalog, ProviderKind, ProviderRequest, Session};
+    use aui_agent_core::{
         ModelCatalogPort, ProviderEvent, ProviderPort, ProviderResponseStream, SessionStorePort,
     };
-    use aui_runtime_native::CoreRuntime;
 
     #[derive(Default)]
     struct FakeProvider;

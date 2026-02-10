@@ -1,4 +1,4 @@
-use aui_core_domain::{
+use crate::{
     Attachment, ConversationMessage, ConversationRole, ProviderKind, Session, SessionId,
     SessionMessage, SessionRole, SessionStatus, WorkingContext,
 };
@@ -157,7 +157,7 @@ pub fn session_id_from_wire(id: u64) -> SessionId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aui_core_domain::{ProviderInfo, Session, SessionStats};
+    use crate::{ProviderInfo, Session, SessionStats};
 
     #[test]
     fn bridge_session_roundtrip_shape_is_json_friendly() {
