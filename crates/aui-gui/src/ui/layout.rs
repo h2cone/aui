@@ -7,7 +7,6 @@ use aui_ai::SessionStatus;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutMetrics {
     pub top_bar_height: f32,
-    pub settings_height: f32,
     pub sidebar_width: f32,
     pub content_padding: f32,
 }
@@ -17,7 +16,6 @@ impl LayoutMetrics {
         let _ = height_px;
         Self {
             top_bar_height: 44.0,
-            settings_height: 280.0,
             sidebar_width: (width_px * 0.26).clamp(220.0, 300.0),
             content_padding: (width_px.min(height_px) * 0.02).clamp(10.0, 16.0),
         }
@@ -68,6 +66,8 @@ pub fn render_app(
         .on_action(cx.listener(AuiApp::attach_files))
         .on_action(cx.listener(AuiApp::export_session))
         .on_action(cx.listener(AuiApp::clear_attachments_action))
+        .on_action(cx.listener(AuiApp::open_settings_action))
+        .on_action(cx.listener(AuiApp::close_settings_action))
         .child(
             div()
                 .size_full()
@@ -82,29 +82,6 @@ pub fn render_app(
                         .child(top_bar::render_top_bar(view, active_session, cx)),
                 )
                 .child(div().h(px(1.)).bg(theme::border()))
-                .child({
-                    if settings_open {
-                        div()
-                            .h(px(metrics.settings_height))
-                            .id("settings-scroll")
-                            .overflow_y_scroll()
-                            .child(settings_panel::render_settings_panel(
-                                view,
-                                active_session,
-                                cx,
-                            ))
-                            .into_any_element()
-                    } else {
-                        div().h(px(0.)).into_any_element()
-                    }
-                })
-                .child({
-                    if settings_open {
-                        div().h(px(1.)).bg(theme::border()).into_any_element()
-                    } else {
-                        div().h(px(0.)).into_any_element()
-                    }
-                })
                 .child(
                     div()
                         .flex_1()
@@ -177,6 +154,64 @@ pub fn render_app(
                                         .child(input_box::render_input_box(&view.text_input, cx)),
                                 ),
                         ),
+                ),
+        )
+        .child({
+            if settings_open {
+                render_settings_modal(view, active_session, viewport_w, viewport_h, cx)
+                    .into_any_element()
+            } else {
+                div().h(px(0.)).into_any_element()
+            }
+        })
+}
+
+fn render_settings_modal(
+    view: &AuiApp,
+    active_session: Option<&crate::session::Session>,
+    viewport_w: f32,
+    viewport_h: f32,
+    cx: &mut Context<AuiApp>,
+) -> impl IntoElement {
+    let modal_width = (viewport_w - 64.0).clamp(640.0, 980.0);
+    let modal_height = (viewport_h - 80.0).clamp(420.0, 760.0);
+
+    div()
+        .absolute()
+        .top(px(0.))
+        .right(px(0.))
+        .bottom(px(0.))
+        .left(px(0.))
+        .bg(hsla(0.0, 0.0, 0.0, 0.34))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|view, _, _, cx| view.close_settings(cx)),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(0.))
+                .right(px(0.))
+                .bottom(px(0.))
+                .left(px(0.))
+                .p(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(modal_width))
+                        .h(px(modal_height))
+                        .min_h(px(320.))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                        )
+                        .child(settings_panel::render_settings_panel(
+                            view,
+                            active_session,
+                            cx,
+                        )),
                 ),
         )
 }

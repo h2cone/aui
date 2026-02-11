@@ -22,7 +22,9 @@ use aui_ai::{
     UserMessage, WorkingContext,
 };
 
-use crate::actions::{AttachFiles, ClearAttachments, ExportSession, Submit};
+use crate::actions::{
+    AttachFiles, ClearAttachments, CloseSettings, ExportSession, OpenSettings, Submit,
+};
 use crate::config;
 use crate::logger;
 use crate::model_catalog::{ModelCatalog, fetch_models, now_epoch_secs, should_refresh};
@@ -52,7 +54,25 @@ pub struct AuiApp {
     model_refresh_errors: HashMap<ProviderKind, SharedString>,
     model_refresh_user_requested: HashSet<ProviderKind>,
     settings_open: bool,
+    settings_section: SettingsSection,
     settings_show_all_models: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsSection {
+    General,
+    Models,
+    Keybindings,
+}
+
+impl SettingsSection {
+    pub const fn title(self) -> &'static str {
+        match self {
+            SettingsSection::General => "General",
+            SettingsSection::Models => "Models",
+            SettingsSection::Keybindings => "Keybindings",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -464,6 +484,7 @@ impl AuiApp {
             model_refresh_errors: HashMap::new(),
             model_refresh_user_requested: HashSet::new(),
             settings_open: false,
+            settings_section: SettingsSection::Models,
             settings_show_all_models: false,
         };
 
@@ -674,6 +695,18 @@ impl AuiApp {
         self.settings_show_all_models
     }
 
+    pub fn settings_section(&self) -> SettingsSection {
+        self.settings_section
+    }
+
+    pub fn set_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
+        if self.settings_section == section {
+            return;
+        }
+        self.settings_section = section;
+        cx.notify();
+    }
+
     pub fn model_catalog(&self) -> &ModelCatalog {
         &self.model_catalog
     }
@@ -858,6 +891,14 @@ impl AuiApp {
 
     pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
         self.settings_open = !self.settings_open;
+        cx.notify();
+    }
+
+    pub fn open_settings(&mut self, cx: &mut Context<Self>) {
+        if self.settings_open {
+            return;
+        }
+        self.settings_open = true;
         cx.notify();
     }
 
@@ -1138,6 +1179,24 @@ impl AuiApp {
         cx: &mut Context<Self>,
     ) {
         self.clear_attachments(cx);
+    }
+
+    pub(crate) fn close_settings_action(
+        &mut self,
+        _: &CloseSettings,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_settings(cx);
+    }
+
+    pub(crate) fn open_settings_action(
+        &mut self,
+        _: &OpenSettings,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings(cx);
     }
 
     pub(crate) fn export_session(

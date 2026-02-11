@@ -17,6 +17,8 @@ actions!(
         AttachFiles,
         ClearAttachments,
         ExportSession,
+        OpenSettings,
+        CloseSettings,
         HistoryPrev,
         HistoryNext,
         ShowCharacterPalette,

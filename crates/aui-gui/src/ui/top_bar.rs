@@ -188,7 +188,7 @@ pub fn render_top_bar(
                         .cursor(CursorStyle::PointingHand)
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|view, _, _, cx| view.toggle_settings(cx)),
+                            cx.listener(|view, _, _, cx| view.open_settings(cx)),
                         )
                         .child("Settings"),
                 ),
