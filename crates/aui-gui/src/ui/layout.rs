@@ -203,6 +203,9 @@ fn render_settings_modal(
                         .w(px(modal_width))
                         .h(px(modal_height))
                         .min_h(px(320.))
+                        .on_scroll_wheel(cx.listener(|_, _: &gpui::ScrollWheelEvent, _, cx| {
+                            cx.stop_propagation();
+                        }))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|_, _, _, cx| cx.stop_propagation()),

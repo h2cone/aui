@@ -1147,6 +1147,9 @@ impl AuiApp {
                             },
                             true,
                         );
+                        if is_terminal {
+                            view.persist_sessions_immediate([active_id]);
+                        }
                         cx.notify();
                     });
                     if is_terminal {
@@ -1918,6 +1921,7 @@ fn restore_sessions(
             .filter(|value| !value.is_empty())
             .map(|value| SharedString::from(value.to_string()))
             .unwrap_or_else(|| default_model_for(model_catalog, provider.kind));
+        let messages = normalize_stored_messages(stored.messages);
         let session = crate::session::Session {
             id: stored.id,
             title: SharedString::from(stored.title),
@@ -1925,10 +1929,25 @@ fn restore_sessions(
             model,
             status: SessionStatus::Idle,
             stats: crate::session::SessionStats::new(),
-            messages: stored.messages,
+            messages,
         };
         sessions.restore_session(session);
     }
+}
+
+fn normalize_stored_messages(
+    mut messages: Vec<crate::session::SessionMessage>,
+) -> Vec<crate::session::SessionMessage> {
+    while let Some(last) = messages.last() {
+        let trailing_empty_assistant =
+            matches!(last.role, SessionRole::Assistant) && last.content.as_str().trim().is_empty();
+        if trailing_empty_assistant {
+            messages.pop();
+            continue;
+        }
+        break;
+    }
+    messages
 }
 
 fn select_provider(gateway: &ProviderGateway, kind: ProviderKind) -> ProviderInfo {
@@ -2020,6 +2039,43 @@ mod tests {
             catalog.set_models(kind, Vec::new(), now);
         }
         catalog
+    }
+
+    fn make_message(role: SessionRole, content: &str) -> crate::session::SessionMessage {
+        crate::session::SessionMessage {
+            role,
+            content: SessionContent::text(content.to_string()),
+            timestamp: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn normalize_stored_messages_drops_trailing_empty_assistant_messages() {
+        let messages = vec![
+            make_message(SessionRole::User, "hello"),
+            make_message(SessionRole::Assistant, "done"),
+            make_message(SessionRole::Assistant, ""),
+            make_message(SessionRole::Assistant, "   \n\t"),
+        ];
+
+        let normalized = normalize_stored_messages(messages);
+        assert_eq!(normalized.len(), 2);
+        assert!(matches!(normalized[1].role, SessionRole::Assistant));
+        assert_eq!(normalized[1].content.as_str(), "done");
+    }
+
+    #[test]
+    fn normalize_stored_messages_keeps_non_trailing_empty_assistant_messages() {
+        let messages = vec![
+            make_message(SessionRole::User, "hello"),
+            make_message(SessionRole::Assistant, "   "),
+            make_message(SessionRole::User, "follow-up"),
+        ];
+
+        let normalized = normalize_stored_messages(messages);
+        assert_eq!(normalized.len(), 3);
+        assert!(matches!(normalized[1].role, SessionRole::Assistant));
+        assert_eq!(normalized[1].content.as_str(), "   ");
     }
 
     #[test]

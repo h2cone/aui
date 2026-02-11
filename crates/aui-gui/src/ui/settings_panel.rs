@@ -422,6 +422,9 @@ fn render_models_section(
                     div()
                         .h_full()
                         .id("settings-model-list")
+                        .on_scroll_wheel(cx.listener(|_, _: &gpui::ScrollWheelEvent, _, cx| {
+                            cx.stop_propagation();
+                        }))
                         .overflow_y_scroll()
                         .p(px(10.))
                         .flex()
