@@ -35,6 +35,8 @@ use crate::session::{
 use crate::text_input::TextInput;
 use crate::ui;
 
+const CONVERSATION_AUTO_FOLLOW_TOLERANCE_PX: f32 = 24.0;
+
 pub struct AuiApp {
     pub text_input: Entity<TextInput>,
     pub model_input: Entity<TextInput>,
@@ -210,6 +212,18 @@ fn map_provider_event_to_core_ref(event: &ProviderEvent) -> aui_agent_core::Prov
         ProviderEvent::Done => aui_agent_core::ProviderEvent::Done,
         ProviderEvent::Error(message) => aui_agent_core::ProviderEvent::Error(message.clone()),
     }
+}
+
+fn should_follow_conversation_tail(
+    offset_y_px: f32,
+    max_offset_px: f32,
+    tolerance_px: f32,
+) -> bool {
+    if max_offset_px <= 0.5 {
+        return true;
+    }
+    let bottom_offset_y = -max_offset_px;
+    (offset_y_px - bottom_offset_y).abs() <= tolerance_px.max(0.0)
 }
 
 fn map_provider_request_to_user_message(request: aui_agent_core::ProviderRequest) -> UserMessage {
@@ -564,6 +578,20 @@ impl AuiApp {
 
     pub fn conversation_scroll_handle(&self) -> &ScrollHandle {
         &self.conversation_scroll
+    }
+
+    fn should_auto_follow_conversation(&self, session_id: SessionId) -> bool {
+        if self.sessions.active_id() != Some(session_id) {
+            return false;
+        }
+
+        let offset_y_px = self.conversation_scroll.offset().y.to_f64() as f32;
+        let max_offset_px = self.conversation_scroll.max_offset().height.to_f64() as f32;
+        should_follow_conversation_tail(
+            offset_y_px,
+            max_offset_px,
+            CONVERSATION_AUTO_FOLLOW_TOLERANCE_PX,
+        )
     }
 
     pub fn conversation_scrollbar_scroll_wheel(
@@ -1139,6 +1167,7 @@ impl AuiApp {
                     let is_terminal =
                         matches!(event, ProviderEvent::Done | ProviderEvent::Error(_));
                     let _ = handle.update(cx, |view, cx| {
+                        let should_auto_follow = view.should_auto_follow_conversation(active_id);
                         let mapped_event = map_provider_event_to_core_ref(&event);
                         view.dispatch_core_and_sync(
                             CoreCommand::ReceiveProviderEvent {
@@ -1147,6 +1176,9 @@ impl AuiApp {
                             },
                             true,
                         );
+                        if should_auto_follow {
+                            view.conversation_scroll.scroll_to_bottom();
+                        }
                         if is_terminal {
                             view.persist_sessions_immediate([active_id]);
                         }
@@ -2076,6 +2108,19 @@ mod tests {
         assert_eq!(normalized.len(), 3);
         assert!(matches!(normalized[1].role, SessionRole::Assistant));
         assert_eq!(normalized[1].content.as_str(), "   ");
+    }
+
+    #[test]
+    fn should_follow_conversation_tail_when_near_bottom() {
+        assert!(should_follow_conversation_tail(-100.0, 100.0, 24.0));
+        assert!(should_follow_conversation_tail(-88.5, 100.0, 12.0));
+        assert!(should_follow_conversation_tail(0.0, 0.0, 24.0));
+    }
+
+    #[test]
+    fn should_follow_conversation_tail_when_far_from_bottom_is_false() {
+        assert!(!should_follow_conversation_tail(-50.0, 100.0, 24.0));
+        assert!(!should_follow_conversation_tail(0.0, 100.0, 24.0));
     }
 
     #[test]
