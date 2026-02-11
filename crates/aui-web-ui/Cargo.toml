@@ -1,8 +1,11 @@
 [package]
-name = "aui-ui-tui"
+name = "aui-web-ui"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 aui-agent-core = { path = "../aui-agent-core" }
 serde_json = "1.0"
+
+[dev-dependencies]
+aui-tui = { path = "../aui-tui" }

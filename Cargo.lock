@@ -434,14 +434,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "aui"
 version = "0.1.0"
 dependencies = [
- "aui-agent-core",
- "aui-ai",
- "gpui",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "unicode-segmentation",
+ "aui-gui",
 ]
 
 [[package]]
@@ -464,7 +457,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "aui-ui-tui"
+name = "aui-gui"
+version = "0.1.0"
+dependencies = [
+ "aui-agent-core",
+ "aui-ai",
+ "gpui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "aui-tui"
 version = "0.1.0"
 dependencies = [
  "aui-agent-core",
@@ -472,11 +479,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "aui-ui-web"
+name = "aui-web-ui"
 version = "0.1.0"
 dependencies = [
  "aui-agent-core",
- "aui-ui-tui",
+ "aui-tui",
  "serde_json",
 ]
 

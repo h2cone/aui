@@ -13,13 +13,13 @@ use gpui::{
 
 use aui_agent_core::{
     Command as CoreCommand, CoreRuntime, InMemoryCatalog, InMemoryStore,
-    ProviderInfo as CoreProviderInfo, ProviderKind as CoreProviderKind, ProviderPort,
-    ProviderResponseStream, SessionId as CoreSessionId, SessionStatus as CoreSessionStatus,
+    ProviderInfo as CoreProviderInfo, ProviderPort, ProviderResponseStream,
+    SessionId as CoreSessionId, SessionStatus as CoreSessionStatus,
 };
 use aui_ai::ProviderGateway;
 use aui_ai::{
-    Attachment, ConversationMessage, ConversationRole, ProviderEvent, ProviderInfo, ProviderKind,
-    SessionStatus, UserMessage, WorkingContext,
+    Attachment, ConversationMessage, ProviderEvent, ProviderInfo, ProviderKind, SessionStatus,
+    UserMessage, WorkingContext,
 };
 
 use crate::actions::{AttachFiles, ClearAttachments, ExportSession, Submit};
@@ -107,9 +107,9 @@ fn session_to_provider_history(session: &Session) -> Vec<ConversationMessage> {
         .iter()
         .filter_map(|msg| {
             let role = match msg.role {
-                SessionRole::User => ConversationRole::User,
-                SessionRole::Assistant => ConversationRole::Assistant,
-                SessionRole::Tool => ConversationRole::Assistant,
+                SessionRole::User => aui_ai::ConversationRole::User,
+                SessionRole::Assistant => aui_ai::ConversationRole::Assistant,
+                SessionRole::Tool => aui_ai::ConversationRole::Assistant,
             };
             let content = msg.content.as_str();
             if content.trim().is_empty() {
@@ -121,6 +121,107 @@ fn session_to_provider_history(session: &Session) -> Vec<ConversationMessage> {
             })
         })
         .collect()
+}
+
+fn map_provider_kind_to_core(kind: ProviderKind) -> aui_agent_core::ProviderKind {
+    match kind {
+        ProviderKind::Anthropic => aui_agent_core::ProviderKind::Anthropic,
+        ProviderKind::OpenAI => aui_agent_core::ProviderKind::OpenAI,
+        ProviderKind::Gemini => aui_agent_core::ProviderKind::Gemini,
+    }
+}
+
+fn map_provider_kind_from_core(kind: aui_agent_core::ProviderKind) -> ProviderKind {
+    match kind {
+        aui_agent_core::ProviderKind::Anthropic => ProviderKind::Anthropic,
+        aui_agent_core::ProviderKind::OpenAI => ProviderKind::OpenAI,
+        aui_agent_core::ProviderKind::Gemini => ProviderKind::Gemini,
+    }
+}
+
+fn map_provider_to_core(provider: &ProviderInfo) -> CoreProviderInfo {
+    CoreProviderInfo::new(
+        provider.id.as_ref().to_string(),
+        provider.name.as_ref().to_string(),
+        map_provider_kind_to_core(provider.kind),
+    )
+}
+
+fn map_provider_from_core(provider: &CoreProviderInfo) -> ProviderInfo {
+    ProviderInfo::new(
+        provider.id.clone(),
+        provider.name.clone(),
+        map_provider_kind_from_core(provider.kind),
+    )
+}
+
+fn map_provider_event_to_core(event: ProviderEvent) -> aui_agent_core::ProviderEvent {
+    match event {
+        ProviderEvent::TextDelta(delta) => aui_agent_core::ProviderEvent::TextDelta(delta),
+        ProviderEvent::ToolStart { name, input } => {
+            aui_agent_core::ProviderEvent::ToolStart { name, input }
+        }
+        ProviderEvent::ToolResult { name, output } => {
+            aui_agent_core::ProviderEvent::ToolResult { name, output }
+        }
+        ProviderEvent::TokenUsage { input, output } => {
+            aui_agent_core::ProviderEvent::TokenUsage { input, output }
+        }
+        ProviderEvent::Done => aui_agent_core::ProviderEvent::Done,
+        ProviderEvent::Error(message) => aui_agent_core::ProviderEvent::Error(message),
+    }
+}
+
+fn map_provider_event_to_core_ref(event: &ProviderEvent) -> aui_agent_core::ProviderEvent {
+    match event {
+        ProviderEvent::TextDelta(delta) => aui_agent_core::ProviderEvent::TextDelta(delta.clone()),
+        ProviderEvent::ToolStart { name, input } => aui_agent_core::ProviderEvent::ToolStart {
+            name: name.clone(),
+            input: input.clone(),
+        },
+        ProviderEvent::ToolResult { name, output } => aui_agent_core::ProviderEvent::ToolResult {
+            name: name.clone(),
+            output: output.clone(),
+        },
+        ProviderEvent::TokenUsage { input, output } => aui_agent_core::ProviderEvent::TokenUsage {
+            input: *input,
+            output: *output,
+        },
+        ProviderEvent::Done => aui_agent_core::ProviderEvent::Done,
+        ProviderEvent::Error(message) => aui_agent_core::ProviderEvent::Error(message.clone()),
+    }
+}
+
+fn map_provider_request_to_user_message(request: aui_agent_core::ProviderRequest) -> UserMessage {
+    UserMessage {
+        history: request
+            .history
+            .into_iter()
+            .map(|msg| ConversationMessage {
+                role: match msg.role {
+                    aui_agent_core::ConversationRole::System => aui_ai::ConversationRole::System,
+                    aui_agent_core::ConversationRole::User => aui_ai::ConversationRole::User,
+                    aui_agent_core::ConversationRole::Assistant => {
+                        aui_ai::ConversationRole::Assistant
+                    }
+                },
+                content: SharedString::from(msg.content),
+            })
+            .collect(),
+        text: SharedString::from(request.text),
+        attachments: request
+            .attachments
+            .into_iter()
+            .map(|attachment| Attachment {
+                name: attachment.name,
+                path: attachment.path,
+            })
+            .collect(),
+        context: request
+            .context
+            .map(|context| WorkingContext { cwd: context.cwd }),
+        model: SharedString::from(request.model),
+    }
 }
 
 #[derive(Clone)]
@@ -139,17 +240,7 @@ impl ProviderPort for GuiProviderPort {
         self.gateway
             .providers()
             .iter()
-            .map(|provider| {
-                CoreProviderInfo::new(
-                    provider.id.as_ref().to_string(),
-                    provider.name.as_ref().to_string(),
-                    match provider.kind {
-                        ProviderKind::Anthropic => CoreProviderKind::Anthropic,
-                        ProviderKind::OpenAI => CoreProviderKind::OpenAI,
-                        ProviderKind::Gemini => CoreProviderKind::Gemini,
-                    },
-                )
-            })
+            .map(map_provider_to_core)
             .collect()
     }
 
@@ -158,59 +249,13 @@ impl ProviderPort for GuiProviderPort {
         provider: &CoreProviderInfo,
         request: aui_agent_core::ProviderRequest,
     ) -> ProviderResponseStream {
-        let native_provider = ProviderInfo::new(
-            provider.id.clone(),
-            provider.name.clone(),
-            match provider.kind {
-                CoreProviderKind::Anthropic => ProviderKind::Anthropic,
-                CoreProviderKind::OpenAI => ProviderKind::OpenAI,
-                CoreProviderKind::Gemini => ProviderKind::Gemini,
-            },
-        );
-        let stream = self.gateway.connect(&native_provider).send(UserMessage {
-            history: request
-                .history
-                .into_iter()
-                .map(|msg| ConversationMessage {
-                    role: match msg.role {
-                        aui_agent_core::ConversationRole::System => ConversationRole::System,
-                        aui_agent_core::ConversationRole::User => ConversationRole::User,
-                        aui_agent_core::ConversationRole::Assistant => ConversationRole::Assistant,
-                    },
-                    content: SharedString::from(msg.content),
-                })
-                .collect(),
-            text: SharedString::from(request.text),
-            attachments: request
-                .attachments
-                .into_iter()
-                .map(|attachment| Attachment {
-                    name: attachment.name,
-                    path: attachment.path,
-                })
-                .collect(),
-            context: request
-                .context
-                .map(|context| WorkingContext { cwd: context.cwd }),
-            model: SharedString::from(request.model),
-        });
+        let native_provider = map_provider_from_core(provider);
+        let user_message = map_provider_request_to_user_message(request);
+        let stream = self.gateway.connect(&native_provider).send(user_message);
 
         let mut events = Vec::new();
         while let Ok(event) = stream.events.recv() {
-            let core_event = match event {
-                ProviderEvent::TextDelta(delta) => aui_agent_core::ProviderEvent::TextDelta(delta),
-                ProviderEvent::ToolStart { name, input } => {
-                    aui_agent_core::ProviderEvent::ToolStart { name, input }
-                }
-                ProviderEvent::ToolResult { name, output } => {
-                    aui_agent_core::ProviderEvent::ToolResult { name, output }
-                }
-                ProviderEvent::TokenUsage { input, output } => {
-                    aui_agent_core::ProviderEvent::TokenUsage { input, output }
-                }
-                ProviderEvent::Done => aui_agent_core::ProviderEvent::Done,
-                ProviderEvent::Error(message) => aui_agent_core::ProviderEvent::Error(message),
-            };
+            let core_event = map_provider_event_to_core(event);
             let terminal = matches!(
                 core_event,
                 aui_agent_core::ProviderEvent::Done | aui_agent_core::ProviderEvent::Error(_)
@@ -229,15 +274,7 @@ impl AuiApp {
     fn sync_sessions_from_core(&mut self, preserve_streaming: bool) {
         let mut rebuilt = SessionManager::new();
         for core in self.core_runtime.state().sessions() {
-            let provider = ProviderInfo::new(
-                core.provider.id.clone(),
-                core.provider.name.clone(),
-                match core.provider.kind {
-                    CoreProviderKind::Anthropic => ProviderKind::Anthropic,
-                    CoreProviderKind::OpenAI => ProviderKind::OpenAI,
-                    CoreProviderKind::Gemini => ProviderKind::Gemini,
-                },
-            );
+            let provider = map_provider_from_core(&core.provider);
 
             let mut messages = Vec::with_capacity(core.messages.len());
             for message in &core.messages {
@@ -437,15 +474,7 @@ impl AuiApp {
             .map(|session| aui_agent_core::Session {
                 id: CoreSessionId::new(session.id.value()),
                 title: session.title.as_ref().to_string(),
-                provider: CoreProviderInfo::new(
-                    session.provider.id.as_ref().to_string(),
-                    session.provider.name.as_ref().to_string(),
-                    match session.provider.kind {
-                        ProviderKind::Anthropic => CoreProviderKind::Anthropic,
-                        ProviderKind::OpenAI => CoreProviderKind::OpenAI,
-                        ProviderKind::Gemini => CoreProviderKind::Gemini,
-                    },
-                ),
+                provider: map_provider_to_core(&session.provider),
                 model: session.model.as_ref().to_string(),
                 status: match &session.status {
                     SessionStatus::Idle => CoreSessionStatus::Idle,
@@ -690,15 +719,7 @@ impl AuiApp {
         self.dispatch_core_and_sync(
             CoreCommand::CreateSession {
                 title,
-                provider: CoreProviderInfo::new(
-                    provider.id.as_ref().to_string(),
-                    provider.name.as_ref().to_string(),
-                    match provider.kind {
-                        ProviderKind::Anthropic => CoreProviderKind::Anthropic,
-                        ProviderKind::OpenAI => CoreProviderKind::OpenAI,
-                        ProviderKind::Gemini => CoreProviderKind::Gemini,
-                    },
-                ),
+                provider: map_provider_to_core(&provider),
                 model: model.as_ref().to_string(),
             },
             false,
@@ -771,15 +792,7 @@ impl AuiApp {
         self.dispatch_core_and_sync(
             CoreCommand::SetSessionProvider {
                 id: CoreSessionId::new(id.value()),
-                provider: CoreProviderInfo::new(
-                    next_provider.id.as_ref().to_string(),
-                    next_provider.name.as_ref().to_string(),
-                    match next_provider.kind {
-                        ProviderKind::Anthropic => CoreProviderKind::Anthropic,
-                        ProviderKind::OpenAI => CoreProviderKind::OpenAI,
-                        ProviderKind::Gemini => CoreProviderKind::Gemini,
-                    },
-                ),
+                provider: map_provider_to_core(&next_provider),
             },
             false,
         );
@@ -1085,27 +1098,11 @@ impl AuiApp {
                     let is_terminal =
                         matches!(event, ProviderEvent::Done | ProviderEvent::Error(_));
                     let _ = handle.update(cx, |view, cx| {
+                        let mapped_event = map_provider_event_to_core_ref(&event);
                         view.dispatch_core_and_sync(
                             CoreCommand::ReceiveProviderEvent {
                                 session_id: CoreSessionId::new(active_id.value()),
-                                event: match event {
-                                    ProviderEvent::TextDelta(delta) => {
-                                        aui_agent_core::ProviderEvent::TextDelta(delta)
-                                    }
-                                    ProviderEvent::ToolStart { name, input } => {
-                                        aui_agent_core::ProviderEvent::ToolStart { name, input }
-                                    }
-                                    ProviderEvent::ToolResult { name, output } => {
-                                        aui_agent_core::ProviderEvent::ToolResult { name, output }
-                                    }
-                                    ProviderEvent::TokenUsage { input, output } => {
-                                        aui_agent_core::ProviderEvent::TokenUsage { input, output }
-                                    }
-                                    ProviderEvent::Done => aui_agent_core::ProviderEvent::Done,
-                                    ProviderEvent::Error(message) => {
-                                        aui_agent_core::ProviderEvent::Error(message)
-                                    }
-                                },
+                                event: mapped_event,
                             },
                             true,
                         );
@@ -1948,6 +1945,7 @@ fn short_model_label(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aui_ai::ConversationRole;
     use gpui::TestAppContext;
     use std::time::SystemTime;
     use tempfile::tempdir;

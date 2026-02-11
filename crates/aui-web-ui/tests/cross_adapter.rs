@@ -6,8 +6,8 @@ use aui_agent_core::{
 use aui_agent_core::{
     ModelCatalogPort, ProviderEvent, ProviderPort, ProviderResponseStream, SessionStorePort,
 };
-use aui_ui_tui::TuiAdapter;
-use aui_ui_web::WebAdapter;
+use aui_tui::TuiAdapter;
+use aui_web_ui::WebAdapter;
 
 #[derive(Default)]
 struct FakeProvider;
