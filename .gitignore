@@ -23,3 +23,6 @@ target
 # Plans
 docs/plans/**
 TODO.md
+
+# macOS
+.DS_Store
