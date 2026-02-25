@@ -59,6 +59,8 @@ pub fn render_app(
     });
 
     div()
+        .id("app-root")
+        .debug_selector(|| "app-root".to_string())
         .size_full()
         .font_family("Segoe UI")
         .bg(theme::app_bg())
@@ -90,6 +92,8 @@ pub fn render_app(
                         .flex()
                         .child(
                             div()
+                                .id("sidebar-panel")
+                                .debug_selector(|| "sidebar-panel".to_string())
                                 .w(px(metrics.sidebar_width))
                                 .bg(theme::surface_2())
                                 .p(px(metrics.content_padding))
@@ -98,6 +102,8 @@ pub fn render_app(
                         .child(div().w(px(1.)).bg(theme::border()))
                         .child(
                             div()
+                                .id("main-panel")
+                                .debug_selector(|| "main-panel".to_string())
                                 .flex_1()
                                 .min_h(px(0.))
                                 .min_w(px(0.))
@@ -149,6 +155,8 @@ pub fn render_app(
                                 .child(div().h(px(1.)).bg(theme::border()))
                                 .child(
                                     div()
+                                        .id("input-panel")
+                                        .debug_selector(|| "input-panel".to_string())
                                         .bg(theme::surface_2())
                                         .p(px(metrics.content_padding))
                                         .child(input_box::render_input_box(&view.text_input, cx)),
@@ -177,6 +185,8 @@ fn render_settings_modal(
     let modal_height = (viewport_h - 80.0).clamp(420.0, 760.0);
 
     div()
+        .id("settings-modal-overlay")
+        .debug_selector(|| "settings-modal-overlay".to_string())
         .absolute()
         .top(px(0.))
         .right(px(0.))
@@ -200,6 +210,8 @@ fn render_settings_modal(
                 .justify_center()
                 .child(
                     div()
+                        .id("settings-modal-dialog")
+                        .debug_selector(|| "settings-modal-dialog".to_string())
                         .w(px(modal_width))
                         .h(px(modal_height))
                         .min_h(px(320.))

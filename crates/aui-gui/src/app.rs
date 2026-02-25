@@ -2334,6 +2334,159 @@ mod tests {
     }
 
     #[gpui::test]
+    fn desktop_layout_regions_have_expected_geometry(cx: &mut TestAppContext) {
+        use gpui::{point, px, size};
+
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+        let config = config::Config {
+            default_provider_id: "anthropic".to_string(),
+            debug: false,
+        };
+        let catalog = seeded_model_catalog();
+
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let text_input = cx.new(|cx| TextInput::new(cx));
+            let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model"));
+            let gateway = ProviderGateway::new();
+            AuiApp::new_with(
+                cx,
+                text_input,
+                model_input,
+                gateway,
+                config.clone(),
+                storage.clone(),
+                catalog.clone(),
+                false,
+            )
+        });
+        cx.simulate_resize(size(px(1180.), px(760.)));
+        cx.draw(point(px(0.), px(0.)), size(px(1180.), px(760.)), |_, _| {
+            app.clone()
+        });
+
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let sidebar_bounds = cx
+            .debug_bounds("sidebar-panel")
+            .expect("sidebar-panel bounds");
+        let main_bounds = cx.debug_bounds("main-panel").expect("main-panel bounds");
+        let input_bounds = cx.debug_bounds("input-panel").expect("input-panel bounds");
+        let scroll_bounds = cx
+            .debug_bounds("conversation-scroll")
+            .expect("conversation-scroll bounds");
+
+        assert!(
+            sidebar_bounds.left() >= px(0.0),
+            "expected sidebar to be anchored to the window left edge (sidebar_bounds={sidebar_bounds:?})"
+        );
+        assert!(
+            sidebar_bounds.right() <= main_bounds.left() + px(1.0),
+            "expected sidebar to remain left of main panel (sidebar_bounds={sidebar_bounds:?} main_bounds={main_bounds:?})"
+        );
+        assert!(
+            main_bounds.right() <= viewport.width + px(1.0),
+            "expected main panel to stay in viewport (main_bounds={main_bounds:?} viewport={viewport:?})"
+        );
+        assert!(
+            input_bounds.bottom() <= viewport.height + px(1.0),
+            "expected input panel to stay in viewport (input_bounds={input_bounds:?} viewport={viewport:?})"
+        );
+        assert!(
+            scroll_bounds.bottom() <= input_bounds.top() + px(1.0),
+            "expected conversation area to be above input panel (scroll_bounds={scroll_bounds:?} input_bounds={input_bounds:?})"
+        );
+    }
+
+    #[gpui::test]
+    fn settings_overlay_click_closes_modal(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, point, px, size};
+
+        let dir = tempdir().expect("tempdir");
+        let storage = SessionStorage::with_root(dir.path().join("sessions"));
+        let config = config::Config {
+            default_provider_id: "anthropic".to_string(),
+            debug: false,
+        };
+        let catalog = seeded_model_catalog();
+
+        let (app, cx) = cx.add_window_view(|_, cx| {
+            let text_input = cx.new(|cx| TextInput::new(cx));
+            let model_input = cx.new(|cx| TextInput::new_compact(cx, "Custom model"));
+            let gateway = ProviderGateway::new();
+            AuiApp::new_with(
+                cx,
+                text_input,
+                model_input,
+                gateway,
+                config.clone(),
+                storage.clone(),
+                catalog.clone(),
+                false,
+            )
+        });
+        cx.simulate_resize(size(px(1100.), px(700.)));
+
+        app.update(cx, |view, cx| {
+            view.open_settings(cx);
+        });
+        assert!(
+            cx.read_entity(&app, |view, _| view.settings_open()),
+            "expected settings modal to be open before overlay click"
+        );
+
+        cx.draw(point(px(0.), px(0.)), size(px(1100.), px(700.)), |_, _| {
+            app.clone()
+        });
+
+        let overlay_bounds = cx
+            .debug_bounds("settings-modal-overlay")
+            .expect("settings-modal-overlay bounds");
+        let dialog_bounds = cx
+            .debug_bounds("settings-modal-dialog")
+            .expect("settings-modal-dialog bounds");
+        let viewport = cx.update(|window, _| window.viewport_size());
+
+        let overlay_left = overlay_bounds.left().to_f64() as f32;
+        let overlay_top = overlay_bounds.top().to_f64() as f32;
+        let overlay_right = overlay_bounds.right().to_f64() as f32;
+        let overlay_bottom = overlay_bounds.bottom().to_f64() as f32;
+        let viewport_w = viewport.width.to_f64() as f32;
+        let viewport_h = viewport.height.to_f64() as f32;
+
+        assert!(
+            overlay_left <= 1.0 && overlay_top <= 1.0,
+            "expected overlay to start at window origin (overlay_bounds={overlay_bounds:?})"
+        );
+        assert!(
+            overlay_right >= viewport_w - 1.0 && overlay_bottom >= viewport_h - 1.0,
+            "expected overlay to cover viewport (overlay_bounds={overlay_bounds:?} viewport={viewport:?})"
+        );
+        assert!(
+            dialog_bounds.left() >= overlay_bounds.left()
+                && dialog_bounds.top() >= overlay_bounds.top()
+                && dialog_bounds.right() <= overlay_bounds.right()
+                && dialog_bounds.bottom() <= overlay_bounds.bottom(),
+            "expected settings dialog to remain within overlay (dialog_bounds={dialog_bounds:?} overlay_bounds={overlay_bounds:?})"
+        );
+
+        let click_pos = point(
+            overlay_bounds.left() + px(6.0),
+            overlay_bounds.top() + px(6.0),
+        );
+        assert!(
+            !dialog_bounds.contains(&click_pos),
+            "expected test click position to be outside dialog (dialog_bounds={dialog_bounds:?} click_pos={click_pos:?})"
+        );
+
+        cx.simulate_click(click_pos, Modifiers::none());
+
+        assert!(
+            !cx.read_entity(&app, |view, _| view.settings_open()),
+            "expected overlay click to close settings modal"
+        );
+    }
+
+    #[gpui::test]
     fn conversation_scrolls_and_scrollbar_drives_scroll(cx: &mut TestAppContext) {
         use gpui::{Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, point, px, size};
 
